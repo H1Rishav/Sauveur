@@ -75,14 +75,60 @@ export function initDB() {
     CREATE TABLE IF NOT EXISTS agent_actions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
+      task_id INTEGER, -- Added to link actions directly to a task
       agent TEXT NOT NULL, -- Doer, Planner, Profiler, Strategist
       action TEXT NOT NULL,
       status TEXT NOT NULL, -- perceiving, reasoning, acting, verifying, completed, failed
       payload_json TEXT NOT NULL, -- Details of thoughts, acts, and verification
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS task_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS email_drafts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL UNIQUE,
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft', -- draft, approved, sent, cancelled
+      sent_at TEXT,
+      FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
   `);
+
+  // Migration for existing database files (ensure task_id exists in agent_actions)
+  try {
+    db.prepare("ALTER TABLE agent_actions ADD COLUMN task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE").run();
+    console.log("Successfully migrated: Added task_id column to agent_actions table.");
+  } catch (err) {
+    // Column already exists or table is new, ignore
+  }
+
+  try {
+    db.prepare("ALTER TABLE tasks ADD COLUMN planner_roadmap TEXT").run();
+    console.log("Successfully migrated: Added planner_roadmap column to tasks table.");
+  } catch (err) {}
+
+  try {
+    db.prepare("ALTER TABLE tasks ADD COLUMN planner_impossible INTEGER DEFAULT 0").run();
+    console.log("Successfully migrated: Added planner_impossible column to tasks table.");
+  } catch (err) {}
+
+  try {
+    db.prepare("ALTER TABLE tasks ADD COLUMN planner_impossible_reason TEXT").run();
+    console.log("Successfully migrated: Added planner_impossible_reason column to tasks table.");
+  } catch (err) {}
 
   // Seed Demo User and data if it doesn't exist
   const demoEmail = "demo@sauveur.ai";

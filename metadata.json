@@ -1,6 +1,6 @@
 {
   "name": "SAUVEUR",
   "description": "An AI productivity companion that autonomously completes and schedules work.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

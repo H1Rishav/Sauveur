@@ -41,6 +41,9 @@ export interface Task {
   created_at: string;
   artifacts?: Artifact[];
   scheduleBlocks?: ScheduleBlock[];
+  planner_roadmap?: string | null;
+  planner_impossible?: number;
+  planner_impossible_reason?: string | null;
 }
 
 export interface HabitProfile {

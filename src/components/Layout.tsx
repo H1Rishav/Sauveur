@@ -4,6 +4,7 @@ import { User } from '../types.js';
 import { 
   Home, 
   CheckSquare, 
+  Calendar,
   Activity, 
   Award, 
   Settings, 
@@ -13,8 +14,8 @@ import {
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'home' | 'tasks' | 'activity' | 'rewards' | 'settings';
-  onChangeTab: (tab: 'home' | 'tasks' | 'activity' | 'rewards' | 'settings') => void;
+  activeTab: 'home' | 'tasks' | 'calendar' | 'activity' | 'rewards' | 'settings';
+  onChangeTab: (tab: 'home' | 'tasks' | 'calendar' | 'activity' | 'rewards' | 'settings') => void;
   user: User;
   onLogout: () => void;
 }
@@ -23,6 +24,7 @@ export default function Layout({ children, activeTab, onChangeTab, user, onLogou
   const menuItems = [
     { id: 'home', label: 'Home / Dashboard', icon: Home },
     { id: 'tasks', label: 'Tasks', icon: CheckSquare },
+    { id: 'calendar', label: 'Calendar / Roadmaps', icon: Calendar },
     { id: 'activity', label: 'Agent Activity', icon: Activity },
     { id: 'rewards', label: 'Rewards Ledger', icon: Award },
     { id: 'settings', label: 'Settings', icon: Settings },
