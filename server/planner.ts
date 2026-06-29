@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import db from "./db.js";
-import { getGeminiClient, generateContentWithRetry } from "./gemini_client.js";
+import { getGeminiClient, generateContentWithRetry, getModelForAgent } from "./gemini_client.js";
 
 interface PlannerResult {
   roadmap_text: string;
@@ -149,7 +149,7 @@ Do NOT wrap in markdown block, just return raw JSON.
 `;
 
     const response = await generateContentWithRetry(aiClient, {
-      model: "gemini-2.5-flash-lite",
+      model: getModelForAgent('PLANNER'),
       contents: prompt,
       config: {
         responseMimeType: "application/json",

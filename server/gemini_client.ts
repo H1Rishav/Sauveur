@@ -26,6 +26,16 @@ export function getGeminiClient(): GoogleGenAI | null {
   return _ai;
 }
 
+export function getModelForAgent(agent: 'DOER' | 'PLANNER' | 'PROFILER' | 'STRATEGIST'): string {
+  switch (agent) {
+    case 'DOER': return process.env.MODEL_DOER || "gemini-1.5-flash";
+    case 'PLANNER': return process.env.MODEL_PLANNER || "gemini-1.5-flash";
+    case 'PROFILER': return process.env.MODEL_PROFILER || "gemini-1.5-flash";
+    case 'STRATEGIST': return process.env.MODEL_STRATEGIST || "gemini-1.5-flash";
+    default: return "gemini-1.5-flash";
+  }
+}
+
 export interface GenerateContentParams {
   model: string;
   contents: any;

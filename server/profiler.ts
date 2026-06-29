@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import db from "./db.js";
-import { getGeminiClient, generateContentWithRetry } from "./gemini_client.js";
+import { getGeminiClient, generateContentWithRetry, getModelForAgent } from "./gemini_client.js";
 
 export interface UserTraits {
   traits: string[];
@@ -115,7 +115,7 @@ Return JSON only conforming to this TypeScript definition:
 
     // 4. Query Gemini
     const response = await generateContentWithRetry(aiClient, {
-      model: "gemini-2.5-flash-lite",
+      model: getModelForAgent('PROFILER'),
       contents: prompt,
       config: {
         systemInstruction,

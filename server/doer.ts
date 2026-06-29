@@ -5,7 +5,7 @@ import db from "./db.js";
 import { sendMail } from "./mail.js";
 import PDFDocument from "pdfkit";
 import pptxgen from "pptxgenjs";
-import { getGeminiClient, generateContentWithRetry } from "./gemini_client.js";
+import { getGeminiClient, generateContentWithRetry, getModelForAgent } from "./gemini_client.js";
 
 // Initialize Gemini Client
 export let ai: GoogleGenAI | null = getGeminiClient();
@@ -485,7 +485,7 @@ Please evaluate the description and instructions. Execute the required task-comp
       }
       // Query Gemini
       const response = await generateContentWithRetry(aiClient, {
-        model: "gemini-2.5-flash",
+        model: getModelForAgent('DOER'),
         contents: { parts: contentParts },
         config: {
           systemInstruction: "You are SAUVEUR The Doer, an incredibly precise, competent autonomous agent that executes user commands. You analyze voice instructions, descriptions, and file uploads. Choose and trigger one or more appropriate function calls to compile the files/artifacts requested. Maintain strict focus on high professional style matching user traits.",
