@@ -20,7 +20,8 @@ import {
   Loader2,
   File,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Zap
 } from 'lucide-react';
 import VoiceMicButton from './VoiceMicButton.tsx';
 
@@ -114,6 +115,7 @@ interface TaskCardProps {
   onToggleComplete: (taskId: number) => any;
   onToggleMode: (taskId: number) => any;
   onApproveTask: (taskId: number) => any;
+  onMomentumStart?: (taskId: number) => any;
 }
 
 export default function TaskCard({
@@ -122,7 +124,8 @@ export default function TaskCard({
   onDelete,
   onToggleComplete,
   onToggleMode,
-  onApproveTask
+  onApproveTask,
+  onMomentumStart
 }: TaskCardProps) {
   const isCompleted = task.status === 'completed';
   const deadlineInfo = getDeadlineWarning(task.deadline);
@@ -455,6 +458,21 @@ export default function TaskCard({
             )}
           </button>
         </div>
+
+        {/* Momentum Mode paralysis breaker */}
+        {!isCompleted && task.status !== 'active' && onMomentumStart && (
+          <div className="mt-3 ml-7.5">
+            <button
+              type="button"
+              onClick={() => onMomentumStart(task.id)}
+              className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-gradient-to-r from-amber-950/40 to-neutral-900 border border-amber-500/20 hover:border-amber-500/50 rounded-md text-xs font-mono text-amber-500 hover:text-amber-400 font-semibold transition-all shadow-sm cursor-pointer"
+              title="Activate Momentum Mode to auto-generate a 10-minute starter kit and break procrastination."
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-500 animate-pulse animate-duration-1000" />
+              <span>START FIRST 10 MINUTES WITH ME</span>
+            </button>
+          </div>
+        )}
 
         {/* "The Doer" Command Workspace Panel */}
         {!isCompleted && (task.mode === 'collaborative' || task.mode === 'autopilot') && task.status !== 'active' && (

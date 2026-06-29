@@ -2,13 +2,14 @@ import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/Card.js';
 import Badge from './ui/Badge.js';
 import { AgentAction } from '../types.js';
-import { Cpu, Compass, Sliders, ShieldCheck, Filter } from 'lucide-react';
+import { Cpu, Compass, Sliders, ShieldCheck, Filter, RotateCcw } from 'lucide-react';
 
 interface AgentActivityPageProps {
   actions: AgentAction[];
+  onUndo?: (actionId: number) => any;
 }
 
-export default function AgentActivityPage({ actions }: AgentActivityPageProps) {
+export default function AgentActivityPage({ actions, onUndo }: AgentActivityPageProps) {
   const [agentFilter, setAgentFilter] = useState<'all' | 'The Doer' | 'The Planner' | 'The Profiler' | 'The Strategist'>('all');
 
   const filteredActions = actions.filter((act) => {
@@ -93,11 +94,23 @@ export default function AgentActivityPage({ actions }: AgentActivityPageProps) {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 self-start sm:self-center">
-                <span className="text-[10px] font-mono text-neutral-500">STATUS:</span>
-                <Badge variant={act.status === 'completed' ? 'calm' : 'warning'}>
-                  {act.status}
-                </Badge>
+              <div className="flex items-center gap-3 self-start sm:self-center">
+                {onUndo && act.status === 'completed' && act.task_id && (
+                  <button
+                    onClick={() => onUndo(act.id)}
+                    className="px-2.5 py-1 text-[10px] font-mono font-bold uppercase text-neutral-400 hover:text-amber-500 border border-neutral-800 hover:border-amber-500/30 bg-neutral-950/40 rounded transition-all flex items-center gap-1 cursor-pointer"
+                    title="Revert and Undo this autonomous action"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    UNDO
+                  </button>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-neutral-500">STATUS:</span>
+                  <Badge variant={act.status === 'completed' ? 'calm' : 'warning'}>
+                    {act.status}
+                  </Badge>
+                </div>
               </div>
             </div>
 

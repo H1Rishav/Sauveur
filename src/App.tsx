@@ -26,6 +26,8 @@ function MainApp() {
   const [actions, setActions] = useState<AgentAction[]>([]);
   const [ledger, setLedger] = useState<RewardItem[]>([]);
   const [balance, setBalance] = useState<number>(0);
+  const [redemptions, setRedemptions] = useState<any[]>([]);
+  const [proactiveAlerts, setProactiveAlerts] = useState<any[]>([]);
   const [habitProfile, setHabitProfile] = useState<Partial<HabitProfile>>({});
   const [tick, setTick] = useState<number>(0);
 
@@ -74,11 +76,13 @@ function MainApp() {
   const fetchAllData = async () => {
     if (!user) return;
     try {
-      const [tasksRes, actionsRes, rewardsRes, settingsRes] = await Promise.all([
+      const [tasksRes, actionsRes, rewardsRes, settingsRes, redemptionsRes, alertsRes] = await Promise.all([
         apiFetch('/api/tasks'),
         apiFetch('/api/agent-activity'),
         apiFetch('/api/rewards'),
-        apiFetch('/api/settings')
+        apiFetch('/api/settings'),
+        apiFetch('/api/rewards/redemptions'),
+        apiFetch('/api/proactive-alerts')
       ]);
 
       if (tasksRes.ok) {
@@ -97,6 +101,14 @@ function MainApp() {
       if (settingsRes.ok) {
         const d = await settingsRes.json();
         setHabitProfile(d.profile || {});
+      }
+      if (redemptionsRes.ok) {
+        const d = await redemptionsRes.json();
+        setRedemptions(d.redemptions || []);
+      }
+      if (alertsRes.ok) {
+        const d = await alertsRes.json();
+        setProactiveAlerts(d.alerts || []);
       }
     } catch (err) {
       console.error("Error loading application data:", err);
@@ -364,6 +376,89 @@ function MainApp() {
     }
   };
 
+  // Undo Agent Action Handler
+  const handleUndoAction = async (actionId: number) => {
+    setIsActionLoading(true);
+    try {
+      const res = await apiFetch(`/api/agent-activity/${actionId}/undo`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast(data.message || "Action successfully undone.", "success");
+        fetchAllData();
+      } else {
+        toast(data.error || "Failed to process undo request.", "error");
+      }
+    } catch (err) {
+      console.error("Undo failed:", err);
+      toast("Communication breakdown with undo engine.", "error");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  // Resolve Proactive Alert Handler
+  const handleResolveAlert = async (alertId: number) => {
+    try {
+      const res = await apiFetch(`/api/proactive-alerts/${alertId}/resolve`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        setProactiveAlerts(prev => prev.filter(a => a.id !== alertId));
+        toast("Risk notification cleared.", "success");
+      }
+    } catch (err) {
+      console.error("Resolve alert failed:", err);
+    }
+  };
+
+  // Momentum Mode Jumpstart Handler
+  const handleMomentumStart = async (taskId: number) => {
+    setIsActionLoading(true);
+    try {
+      const res = await apiFetch(`/api/tasks/${taskId}/momentum-start`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast(data.message || "Momentum starter file compiled! Break the blank page.", "success");
+        fetchAllData();
+      } else {
+        toast(data.error || "Failed to initiate Momentum Mode.", "error");
+      }
+    } catch (err) {
+      console.error("Momentum failed:", err);
+      toast("Error communicating with momentum engine.", "error");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  // Redemptions Purchase Handler
+  const handleRedeem = async (itemId: string) => {
+    try {
+      const res = await apiFetch('/api/rewards/redeem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast(`Successfully redeemed ${data.itemName}!`, "success");
+        fetchAllData();
+        return data;
+      } else {
+        toast(data.error || "Failed to redeem item.", "error");
+        return data;
+      }
+    } catch (err) {
+      console.error("Redemption failed:", err);
+      toast("Error processing transaction.", "error");
+      return { error: "Network communication error." };
+    }
+  };
+
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-neutral-950 flex flex-col justify-center items-center gap-4 text-neutral-100 font-sans">
@@ -410,6 +505,9 @@ function MainApp() {
           tasks={tasks}
           actions={actions}
           rewardsBalance={balance}
+          proactiveAlerts={proactiveAlerts}
+          onResolveAlert={handleResolveAlert}
+          onMomentumStart={handleMomentumStart}
           onChangeTab={setActiveTab}
           onAddTask={handleAddTask}
           onUpdateTask={handleUpdateTask}
@@ -418,6 +516,7 @@ function MainApp() {
           onToggleMode={handleToggleMode}
           onApproveTask={handleApproveTask}
           onClearCompleted={handleClearCompleted}
+          apiFetch={apiFetch}
         />
       )}
 
@@ -431,6 +530,7 @@ function MainApp() {
           onToggleMode={handleToggleMode}
           onApproveTask={handleApproveTask}
           onClearCompleted={handleClearCompleted}
+          onMomentumStart={handleMomentumStart}
           isLoading={isActionLoading}
         />
       )}
@@ -446,6 +546,7 @@ function MainApp() {
       {activeTab === 'activity' && (
         <AgentActivityPage
           actions={actions}
+          onUndo={handleUndoAction}
         />
       )}
 
@@ -453,6 +554,8 @@ function MainApp() {
         <RewardsPage
           ledger={ledger}
           balance={balance}
+          redemptions={redemptions}
+          onRedeem={handleRedeem}
         />
       )}
 
@@ -462,6 +565,8 @@ function MainApp() {
           userName={user.name}
           userEmail={user.email}
           onSaveSettings={handleSaveSettings}
+          onRefreshProfile={fetchAllData}
+          apiFetch={apiFetch}
         />
       )}
     </Layout>

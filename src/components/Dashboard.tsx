@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/Card.tsx';
 import Badge from './ui/Badge.tsx';
 import Button from './ui/Button.tsx';
@@ -18,13 +18,44 @@ import {
   Plus,
   Info,
   History,
-  Play
+  Play,
+  Mail,
+  Trash2,
+  Edit3,
+  Save,
+  Check,
+  AlertTriangle
 } from 'lucide-react';
+
+interface ExtensionDraft {
+  taskId: number;
+  taskTitle: string;
+  recipient: string;
+  subject: string;
+  body: string;
+}
+
+interface TriageRecommendation {
+  taskId: number;
+  title: string;
+  action: "START IMMEDIATELY" | "MINIMIZE" | "REQUEST EXTENSION" | "DELEGATE" | "MONITOR";
+  reason: string;
+  priority: "high" | "medium" | "low";
+}
+
+interface StrategistResult {
+  feasibilityAnalysis: string;
+  triageRecommendations: TriageRecommendation[];
+  extensionDrafts: ExtensionDraft[];
+}
 
 interface DashboardProps {
   tasks: Task[];
   actions: AgentAction[];
   rewardsBalance: number;
+  proactiveAlerts?: any[];
+  onResolveAlert?: (alertId: number) => void;
+  onMomentumStart?: (taskId: number) => void;
   onChangeTab: (tab: 'home' | 'tasks' | 'activity' | 'rewards' | 'settings') => void;
   onAddTask: (taskData: any) => Promise<boolean>;
   onUpdateTask: (taskId: number, taskData: any) => Promise<boolean>;
@@ -33,12 +64,16 @@ interface DashboardProps {
   onToggleMode: (taskId: number) => Promise<boolean>;
   onApproveTask: (taskId: number) => Promise<boolean>;
   onClearCompleted: () => Promise<boolean>;
+  apiFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
 
 export default function Dashboard({ 
   tasks, 
   actions, 
   rewardsBalance, 
+  proactiveAlerts = [],
+  onResolveAlert,
+  onMomentumStart,
   onChangeTab,
   onAddTask,
   onUpdateTask,
@@ -46,7 +81,8 @@ export default function Dashboard({
   onToggleComplete,
   onToggleMode,
   onApproveTask,
-  onClearCompleted
+  onClearCompleted,
+  apiFetch
 }: DashboardProps) {
   // Compute basic stats
   const totalTasks = tasks.length;
@@ -65,6 +101,121 @@ export default function Dashboard({
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  // Strategist Agent States
+  const [strategistData, setStrategistData] = useState<StrategistResult | null>(null);
+  const [isLoadingStrategist, setIsLoadingStrategist] = useState(false);
+  const [selectedDrafts, setSelectedDrafts] = useState<number[]>([]);
+  const [editingDraftId, setEditingDraftId] = useState<number | null>(null);
+  const [editedBody, setEditedBody] = useState("");
+  const [isApprovingDrafts, setIsApprovingDrafts] = useState(false);
+  const [draftRecipients, setDraftRecipients] = useState<Record<number, string>>({});
+  const [draftSubjects, setDraftSubjects] = useState<Record<number, string>>({});
+
+  const fetchSuggestions = async (force = false) => {
+    if (!apiFetch) return;
+    setIsLoadingStrategist(true);
+    try {
+      const url = force ? '/api/strategist/suggestions?force=true' : '/api/strategist/suggestions';
+      const res = await apiFetch(url);
+      if (res.ok) {
+        const data = await res.json() as StrategistResult;
+        setStrategistData(data);
+        
+        // Initialize draft edit states
+        const recipients: Record<number, string> = {};
+        const subjects: Record<number, string> = {};
+        data.extensionDrafts.forEach(draft => {
+          recipients[draft.taskId] = draft.recipient;
+          subjects[draft.taskId] = draft.subject;
+        });
+        setDraftRecipients(recipients);
+        setDraftSubjects(subjects);
+        // select all by default
+        setSelectedDrafts(data.extensionDrafts.map(d => d.taskId));
+      }
+    } catch (err) {
+      console.error("Failed to load strategic suggestions:", err);
+    } finally {
+      setIsLoadingStrategist(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSuggestions();
+  }, [tasks]);
+
+  const handleApproveDrafts = async (approveAll = false) => {
+    if (!apiFetch || !strategistData) return;
+    const targetTaskIds = approveAll 
+      ? strategistData.extensionDrafts.map(d => d.taskId)
+      : selectedDrafts;
+
+    if (targetTaskIds.length === 0) {
+      return;
+    }
+
+    setIsApprovingDrafts(true);
+    try {
+      const draftsToSend = strategistData.extensionDrafts
+        .filter(d => targetTaskIds.includes(d.taskId))
+        .map(d => ({
+          taskId: d.taskId,
+          recipient: draftRecipients[d.taskId] || d.recipient,
+          subject: draftSubjects[d.taskId] || d.subject,
+          body: editingDraftId === d.taskId ? editedBody : d.body
+        }));
+
+      const res = await apiFetch('/api/strategist/suggestions/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drafts: draftsToSend })
+      });
+
+      if (res.ok) {
+        // Filter out approved drafts from UI
+        setStrategistData(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            extensionDrafts: prev.extensionDrafts.filter(d => !targetTaskIds.includes(d.taskId))
+          };
+        });
+        setSelectedDrafts([]);
+        setEditingDraftId(null);
+        fetchSuggestions();
+      }
+    } catch (err) {
+      console.error("Approve suggestions error:", err);
+    } finally {
+      setIsApprovingDrafts(false);
+    }
+  };
+
+  const handleStartEditDraft = (draft: ExtensionDraft) => {
+    setEditingDraftId(draft.taskId);
+    setEditedBody(draft.body);
+  };
+
+  const handleSaveEditDraft = (taskId: number) => {
+    if (!strategistData) return;
+    setStrategistData({
+      ...strategistData,
+      extensionDrafts: strategistData.extensionDrafts.map(d => 
+        d.taskId === taskId ? { ...d, body: editedBody } : d
+      )
+    });
+    setEditingDraftId(null);
+  };
+
+  const handleRejectDraft = (taskId: number) => {
+    if (!strategistData) return;
+    setStrategistData({
+      ...strategistData,
+      extensionDrafts: strategistData.extensionDrafts.filter(d => d.taskId !== taskId)
+    });
+    setSelectedDrafts(prev => prev.filter(id => id !== taskId));
+  };
 
   // Sorting weight for urgency: high-priority deadlines sorted top
   const urgencyWeight = {
@@ -278,6 +429,270 @@ export default function Dashboard({
         </CardContent>
       </Card>
 
+      {/* Agent Suggestions (The Strategist) Section */}
+      <Card id="strategist-suggestions-panel" className="border border-neutral-800/80 bg-neutral-900/10">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 border-b border-neutral-800/60 gap-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-rose-500 animate-pulse" />
+            <div>
+              <CardTitle className="text-lg">Agent Suggestions & Proactive Triage</CardTitle>
+              <CardDescription>Synthesized pipeline analysis compiled by The Strategist</CardDescription>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs font-semibold py-1 px-3 bg-neutral-950 border-neutral-850 hover:border-amber-500/30 text-neutral-300 self-start sm:self-auto"
+            onClick={() => fetchSuggestions(true)}
+            isLoading={isLoadingStrategist}
+          >
+            <Sparkles className="w-3.5 h-3.5 mr-1 text-amber-500 animate-pulse" />
+            Recalculate Strategy
+          </Button>
+        </CardHeader>
+        <CardContent className="pt-4 space-y-6">
+          {isLoadingStrategist ? (
+            <div className="flex flex-col items-center justify-center py-10 space-y-3">
+              <div className="w-8 h-8 rounded-full border-2 border-t-amber-500 border-neutral-800 animate-spin" />
+              <p className="text-xs font-mono text-neutral-500">The Strategist is calculating time curves and drafting responses...</p>
+            </div>
+          ) : strategistData ? (
+            <div className="space-y-6">
+              {/* Feasibility Analysis Reality Check */}
+              <div className="p-4 bg-neutral-950/60 rounded border-l-4 border-amber-500/80 border-y border-r border-neutral-850/80 text-xs text-neutral-300 leading-relaxed font-sans shadow-inner">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span className="font-mono text-[10px] text-amber-500 uppercase tracking-widest font-semibold font-bold">STATION REALITY CHECK</span>
+                </div>
+                <SimpleMarkdown text={strategistData.feasibilityAnalysis} />
+              </div>
+
+              {/* Triage recommendations */}
+              {strategistData.triageRecommendations && strategistData.triageRecommendations.length > 0 && (
+                <div className="space-y-2.5">
+                  <h4 className="text-xs font-mono font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Compass className="w-4 h-4 text-neutral-500" />
+                    Cognitive Action Pathways
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                    {strategistData.triageRecommendations.map((rec) => {
+                      const actionColors = {
+                        "START IMMEDIATELY": "bg-rose-950/40 text-rose-300 border-rose-900/60",
+                        "MINIMIZE": "bg-amber-950/40 text-amber-300 border-amber-900/60",
+                        "REQUEST EXTENSION": "bg-sky-950/40 text-sky-300 border-sky-900/60",
+                        "DELEGATE": "bg-emerald-950/40 text-emerald-300 border-emerald-900/60",
+                        "MONITOR": "bg-neutral-900/30 text-neutral-400 border-neutral-800/80"
+                      };
+                      const colorClass = actionColors[rec.action] || "bg-neutral-950 text-neutral-400 border-neutral-800";
+                      
+                      return (
+                        <div key={rec.taskId} className="p-3 bg-neutral-950/30 rounded border border-neutral-850 flex flex-col justify-between space-y-2">
+                          <div className="space-y-1">
+                            <h5 className="font-sans font-semibold text-xs text-neutral-200 line-clamp-1">{rec.title}</h5>
+                            <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-wider border ${colorClass}`}>
+                              {rec.action}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-neutral-400 leading-normal font-sans">
+                            {rec.reason}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Extension Drafts */}
+              {strategistData.extensionDrafts && strategistData.extensionDrafts.length > 0 ? (
+                <div className="space-y-3 border-t border-neutral-800/60 pt-4">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-1">
+                    <h4 className="text-xs font-mono font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Mail className="w-4 h-4 text-neutral-500" />
+                      Proactive Extension Request Drafts
+                    </h4>
+                    
+                    {/* Bulk controls */}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={selectedDrafts.length === 0 || isApprovingDrafts}
+                        onClick={() => handleApproveDrafts(false)}
+                        className="text-[10px] py-1 px-2.5 h-auto bg-neutral-950 border-neutral-850 hover:border-amber-500/30 text-neutral-300"
+                      >
+                        <Check className="w-3 h-3 mr-1 text-emerald-500" />
+                        Approve Selected ({selectedDrafts.length})
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={isApprovingDrafts}
+                        onClick={() => handleApproveDrafts(true)}
+                        className="text-[10px] py-1 px-2.5 h-auto font-semibold"
+                      >
+                        Approve & Dispatch All
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {strategistData.extensionDrafts.map((draft) => {
+                      const isSelected = selectedDrafts.includes(draft.taskId);
+                      const isEditing = editingDraftId === draft.taskId;
+                      
+                      return (
+                        <div key={draft.taskId} className={`p-4 rounded border transition-colors ${isSelected ? 'bg-neutral-950/40 border-amber-500/20' : 'bg-neutral-950/20 border-neutral-850'}`}>
+                          <div className="flex items-start gap-3">
+                            {/* Checkbox */}
+                            <button
+                              onClick={() => {
+                                setSelectedDrafts(prev =>
+                                  prev.includes(draft.taskId)
+                                    ? prev.filter(id => id !== draft.taskId)
+                                    : [...prev, draft.taskId]
+                                );
+                              }}
+                              className="mt-1 flex items-center justify-center w-4 h-4 rounded border border-neutral-700 bg-neutral-950 text-amber-500 hover:border-amber-500 transition-colors shrink-0"
+                            >
+                              {isSelected && <span className="w-2 h-2 rounded-sm bg-amber-500" />}
+                            </button>
+
+                            <div className="flex-1 space-y-3">
+                              {/* Header details */}
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-neutral-900 pb-2">
+                                <div>
+                                  <span className="text-[10px] font-mono text-neutral-500 uppercase">SUBJECT TARGET:</span>
+                                  <h5 className="text-xs font-semibold text-neutral-200">{draft.taskTitle}</h5>
+                                </div>
+                                <div className="flex items-center gap-1.5 self-end">
+                                  {isEditing ? (
+                                    <button
+                                      onClick={() => handleSaveEditDraft(draft.taskId)}
+                                      className="p-1 text-[10px] font-mono hover:text-amber-500 text-neutral-400 inline-flex items-center gap-0.5"
+                                    >
+                                      <Save className="w-3 h-3 text-emerald-500" /> Save
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleStartEditDraft(draft)}
+                                      className="p-1 text-[10px] font-mono hover:text-amber-500 text-neutral-400 inline-flex items-center gap-0.5"
+                                    >
+                                      <Edit3 className="w-3 h-3" /> Edit
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => handleRejectDraft(draft.taskId)}
+                                    className="p-1 text-[10px] font-mono hover:text-rose-400 text-neutral-400 inline-flex items-center gap-0.5"
+                                  >
+                                    <Trash2 className="w-3 h-3" /> Reject
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Form Inputs (Recipient, Subject, Body) */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                                <div>
+                                  <label className="block text-[9px] font-mono text-neutral-500 uppercase mb-1">RECIPIENT EMAIL</label>
+                                  <input
+                                    type="email"
+                                    value={draftRecipients[draft.taskId] || ""}
+                                    onChange={(e) => setDraftRecipients({ ...draftRecipients, [draft.taskId]: e.target.value })}
+                                    className="w-full bg-neutral-950 border border-neutral-850 rounded px-2 py-1 text-neutral-300 focus:outline-none focus:border-amber-500 text-xs font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[9px] font-mono text-neutral-500 uppercase mb-1">EMAIL SUBJECT</label>
+                                  <input
+                                    type="text"
+                                    value={draftSubjects[draft.taskId] || ""}
+                                    onChange={(e) => setDraftSubjects({ ...draftSubjects, [draft.taskId]: e.target.value })}
+                                    className="w-full bg-neutral-950 border border-neutral-850 rounded px-2 py-1 text-neutral-300 focus:outline-none focus:border-amber-500 text-xs"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Email Body */}
+                              <div>
+                                <label className="block text-[9px] font-mono text-neutral-500 uppercase mb-1">EMAIL BODY</label>
+                                {isEditing ? (
+                                  <textarea
+                                    value={editedBody}
+                                    onChange={(e) => setEditedBody(e.target.value)}
+                                    rows={5}
+                                    className="w-full bg-neutral-950 border border-neutral-850 rounded p-2.5 font-mono text-[11px] text-neutral-300 focus:outline-none focus:border-amber-500 leading-relaxed"
+                                  />
+                                ) : (
+                                  <div className="bg-neutral-950/80 p-2.5 rounded border border-neutral-900 font-mono text-[10px] text-neutral-400 leading-relaxed whitespace-pre-wrap">
+                                    {draft.body}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4 text-neutral-500 text-xs font-sans">
+                  No extension requests are currently drafted. Your schedule blocks are safely balanced!
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-6 text-neutral-500 text-xs font-sans">
+              Click the recalculate button to analyze your pipeline feasibility.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      
+      {/* Proactive Collision Detector Notifications */}
+      {proactiveAlerts && proactiveAlerts.length > 0 && (
+        <div className="space-y-3 px-1">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-amber-500 animate-pulse" />
+            <h3 className="text-xs font-mono font-bold tracking-wider text-amber-500 uppercase">
+              PROACTIVE COLLISION ALERTS DETECTED BY THE STRATEGIST
+            </h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {proactiveAlerts.map((alert) => (
+              <div 
+                key={alert.id} 
+                className="p-4 bg-gradient-to-r from-neutral-950/90 to-neutral-900 border border-amber-500/10 hover:border-amber-500/30 rounded-lg flex gap-3 relative overflow-hidden group transition-all"
+              >
+                <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded h-fit text-amber-400">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div className="flex-1 space-y-1.5 pr-6">
+                  <span className="text-[9px] font-mono font-bold text-amber-500 tracking-wider uppercase bg-amber-500/10 px-1.5 py-0.5 rounded">
+                    {alert.alert_type}
+                  </span>
+                  <p className="text-xs text-neutral-200 leading-relaxed font-sans font-medium">
+                    {alert.message}
+                  </p>
+                  <p className="text-[10px] font-mono text-neutral-500">
+                    DETECTION TIMESTAMP: {new Date(alert.created_at).toLocaleString()}
+                  </p>
+                </div>
+                {onResolveAlert && (
+                  <button
+                    onClick={() => onResolveAlert(alert.id)}
+                    className="absolute top-3 right-3 text-neutral-500 hover:text-neutral-200 transition-colors text-xs font-bold cursor-pointer"
+                    title="Acknowledge and Resolve"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Main Core Section: Interactive Tasks Core Panel & Stream Split */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
@@ -352,6 +767,7 @@ export default function Dashboard({
                   onToggleComplete={onToggleComplete}
                   onToggleMode={onToggleMode}
                   onApproveTask={onApproveTask}
+                  onMomentumStart={onMomentumStart}
                 />
               ))
             ) : (
@@ -364,6 +780,7 @@ export default function Dashboard({
                   onToggleComplete={onToggleComplete}
                   onToggleMode={onToggleMode}
                   onApproveTask={onApproveTask}
+                  onMomentumStart={onMomentumStart}
                 />
               ))
             )}
@@ -464,5 +881,20 @@ export default function Dashboard({
       />
 
     </div>
+  );
+}
+
+function SimpleMarkdown({ text }: { text: string }) {
+  if (!text) return null;
+  const parts = text.split(/(\*\*.*?\*\*)/g);
+  return (
+    <span className="leading-relaxed">
+      {parts.map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={i} className="text-amber-400 font-semibold">{part.slice(2, -2)}</strong>;
+        }
+        return part;
+      })}
+    </span>
   );
 }

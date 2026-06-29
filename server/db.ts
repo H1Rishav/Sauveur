@@ -105,6 +105,37 @@ export function initDB() {
       sent_at TEXT,
       FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS strategist_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE,
+      suggestions_json TEXT NOT NULL,
+      last_analyzed_max_task_id INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS redemptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      item_id TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      cost REAL NOT NULL,
+      voucher_code TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS proactive_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      alert_type TEXT NOT NULL, -- collision, impossible, snoozed
+      message TEXT NOT NULL,
+      details_json TEXT,
+      is_resolved INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
 
   // Migration for existing database files (ensure task_id exists in agent_actions)
@@ -128,6 +159,11 @@ export function initDB() {
   try {
     db.prepare("ALTER TABLE tasks ADD COLUMN planner_impossible_reason TEXT").run();
     console.log("Successfully migrated: Added planner_impossible_reason column to tasks table.");
+  } catch (err) {}
+
+  try {
+    db.prepare("ALTER TABLE tasks ADD COLUMN completed_at TEXT").run();
+    console.log("Successfully migrated: Added completed_at column to tasks table.");
   } catch (err) {}
 
   // Seed Demo User and data if it doesn't exist

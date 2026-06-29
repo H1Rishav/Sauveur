@@ -41,6 +41,8 @@ The system stores all state variables in a local file database (`sauveur.db`) ut
 - **`habit_profile`**: Persists behavioral metrics, target focus intervals, and communication preferences managed by the Profiler.
 - **`rewards_ledger`**: Logs gamified feedback point credits awarded for completions and approvals.
 - **`agent_actions`**: Records the comprehensive cognitive traces of agent-specific background processes following the PRAV flow.
+- **`redemptions`**: Tracks user purchases from the Redemption Store, storing costs and cryptographically generated license/voucher codes.
+- **`proactive_alerts`**: Persists system warnings and timeline overload/stagnant risk assessments identified by the collision detector.
 
 ---
 
@@ -84,3 +86,26 @@ The system stores all state variables in a local file database (`sauveur.db`) ut
   - **Urgent Red**: Deadlines less than 12 hours away or overdue (e.g. `Due in 3h`, `OVERDUE BY 2d`).
 - **Overdue Task Integrity**: Any task whose deadline passes without completion is flagged as overdue and remains visible in the Active Queue as incomplete to prevent hidden critical misses.
 - **Textual Warning Headers**: Clear status badges explaining exactly how much time remains before milestone exhaustion.
+
+### 6.6 Server-Authoritative Rewards & Redemption Store
+- **Tamper-Proof Credit System**: Point values are computed *exclusively* on the server-side inside secure transactions during task completions. The client cannot set, edit, or inject point rewards.
+- **Redemption Store**: An elegant, native catalog of custom upgrades (1-Week Pro Unlock, Action Quota refills, Streak Freezes, Premium late-night focus themes) alongside mock physical/fulfillment perks (Moleskine notebooks, premium espresso vouchers).
+- **Interactive Purchase Flow & Gaps**: Items users can afford are unlocked with loading indicators. Locked items are disabled and display the exact point deficit. Successfully redeemed items generate real-time voucher/license keys stored securely.
+
+### 6.7 Agent Activity Feed & Reversible Undo Engine
+- **Cognitive Logs Feed**: Renders a complete, chronological timeline of agent processes (Doer, Planner, Profiler, Strategist) mapped with their internal PRAV phase outputs.
+- **State-Safe Undo Operations**: Where reversible (e.g., reverting task completion status, stripping awarded points, deleting schedule blocks, or clearing unsent drafts), users can trigger a full database rollback.
+- **Clawbacks**: Automatically computes point balances and enforces immutable debit adjustments on the rewards ledger, preventing double-credit exploitation.
+
+### 6.8 Momentum Mode Procrastination Breaker
+- **Paralysis-Breaking Trigger**: Renders a "Start first 10 minutes with me" button on active task cards.
+- **Starter Artifact Generation**: The Doer immediately triggers a fast, targeted Gemini run to generate outline skeletons, opening draft paragraphs, or structured templates.
+- **Blank-Page Overcoming**: Bypasses the initial friction hump by instantly dumping the user into a structured, custom starting ground rather than a blank canvas.
+
+### 6.9 Proactive Collision Detector
+- **Background Pipeline Auditing**: Periodically simulates upcoming schedules and workload bounds relative to user traits and snooze counts.
+- **Conflict Risk Assessment**: Evaluates and detects three vital threat types:
+  - **Schedule Overload**: When planned hours for a calendar segment exceed available thresholds.
+  - **Impossible Timeline**: When upcoming task deadlines are mathematically unfeasible based on the user's habit pace.
+  - **Stagnant High Risk**: When a high-importance task is sidetracked or repeatedly snoozed.
+- **Proactive Dashboard Alerts**: Automatically flags threats directly at the top of the Pipeline Control Board, providing early warnings and integration with The Strategist for preventative planning.

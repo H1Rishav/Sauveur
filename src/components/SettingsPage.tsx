@@ -11,9 +11,11 @@ interface SettingsPageProps {
   userName: string;
   userEmail: string;
   onSaveSettings: (settingsData: any) => Promise<boolean>;
+  onRefreshProfile?: () => Promise<void>;
+  apiFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
 
-export default function SettingsPage({ initialProfile, userName, userEmail, onSaveSettings }: SettingsPageProps) {
+export default function SettingsPage({ initialProfile, userName, userEmail, onSaveSettings, onRefreshProfile, apiFetch }: SettingsPageProps) {
   const { toast } = useToast();
   const [pace, setPace] = useState(initialProfile.pace || 'deliberate');
   const [riskTolerance, setRiskTolerance] = useState(initialProfile.riskTolerance || 'conservative');
@@ -28,6 +30,7 @@ export default function SettingsPage({ initialProfile, userName, userEmail, onSa
   );
   
   const [isSaving, setIsSaving] = useState(false);
+  const [isReprofiling, setIsReprofiling] = useState(false);
 
   // Sync initial values when they load
   useEffect(() => {
@@ -57,6 +60,30 @@ export default function SettingsPage({ initialProfile, userName, userEmail, onSa
     setIsSaving(false);
     if (success) {
       toast("Habit settings saved. The Profiler has indexed your work styles.", "success");
+    }
+  };
+
+  const handleReprofile = async () => {
+    if (!apiFetch) return;
+    setIsReprofiling(true);
+    try {
+      const res = await apiFetch('/api/profile/reprofile', {
+        method: 'POST'
+      });
+      if (res.ok) {
+        toast("Profiler Diagnostics executed! Memory structures refreshed.", "success");
+        if (onRefreshProfile) {
+          await onRefreshProfile();
+        }
+      } else {
+        const d = await res.json();
+        toast(d.error || "Failed to trigger profiling.", "error");
+      }
+    } catch (err) {
+      console.error("Failed to run profile diagnostics:", err);
+      toast("Network error during Profiler diagnostics.", "error");
+    } finally {
+      setIsReprofiling(false);
     }
   };
 
@@ -195,26 +222,64 @@ export default function SettingsPage({ initialProfile, userName, userEmail, onSa
             </CardContent>
           </Card>
 
-          {/* Profiler Intelligence Info */}
-          <Card>
+          {/* What SAUVEUR has learned about you panel (Profiler) */}
+          <Card id="sauveur-learned-panel">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Sparkles className="w-4.5 h-4.5 text-amber-500 animate-pulse" />
-                The Profiler Insight
+                <Sparkles className="w-4.5 h-4.5 text-amber-500" />
+                What SAUVEUR Has Learned About You
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-xs text-neutral-400 leading-relaxed space-y-3 font-sans">
-              <p>
-                The Profiler agent continuously parses your settings to optimize tasks scheduled by the Planner.
-              </p>
-              <p>
-                If you choose <span className="text-amber-400 font-semibold">Aggressive Autonomous</span>, minor tasks can complete in background cycles without asking for your permission first, instantly updating the ledger.
-              </p>
-              <div className="p-3 bg-neutral-950 rounded border border-neutral-800/80 flex gap-2">
-                <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                <p className="text-[10px] text-neutral-500 font-mono">
-                  RISK CRITERIA: When risk tolerance is conservative, high impact budget or pricing tasks will ALWAYS require human approval before mailing.
-                </p>
+            <CardContent className="space-y-4 text-xs font-sans">
+              {initialProfile.analysis ? (
+                <div className="space-y-3">
+                  <p className="text-neutral-300 leading-relaxed italic border-l-2 border-amber-500/50 pl-3">
+                    "{initialProfile.analysis}"
+                  </p>
+                  
+                  {initialProfile.traits && initialProfile.traits.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] font-mono text-neutral-500 uppercase tracking-wider">Identified Behavior Traits:</h4>
+                      <ul className="space-y-1.5 pl-1">
+                        {initialProfile.traits.map((trait, index) => (
+                          <li key={index} className="flex items-center gap-2 text-neutral-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                            {trait}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {initialProfile.planner_instructions && (
+                    <div className="space-y-2 pt-1">
+                      <h4 className="text-[10px] font-mono text-neutral-500 uppercase tracking-wider">Planner System Directives:</h4>
+                      <div className="bg-neutral-950 p-2.5 rounded border border-neutral-800 font-mono text-[10px] text-amber-400/90 leading-normal">
+                        {initialProfile.planner_instructions}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-4 text-neutral-500 space-y-2">
+                  <p>No behavioral traits analyzed yet.</p>
+                  <p className="text-[10px]">
+                    Complete tasks or trigger diagnostics to compile your personal habit vector!
+                  </p>
+                </div>
+              )}
+
+              <div className="pt-2 border-t border-neutral-800/60">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-xs font-semibold py-2 bg-neutral-900 border-neutral-800 hover:border-amber-500/30 text-neutral-300 hover:text-neutral-100"
+                  isLoading={isReprofiling}
+                  onClick={handleReprofile}
+                >
+                  <Sparkles className="w-3.5 h-3.5 mr-1 text-amber-500 animate-pulse" />
+                  Analyze Behavioral Patterns
+                </Button>
               </div>
             </CardContent>
           </Card>

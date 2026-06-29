@@ -1,18 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import db from "./db.js";
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-let ai: GoogleGenAI | null = null;
-if (GEMINI_API_KEY) {
-  ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
-  });
-}
+import { getGeminiClient, generateContentWithRetry } from "./gemini_client.js";
 
 interface PlannerResult {
   roadmap_text: string;
@@ -37,11 +25,16 @@ export async function runPlannerAgent(taskId: number, userConstraints: string = 
 
     // 2. Fetch User Profile for work pace & preferred load
     const habitProfileRow = db.prepare("SELECT traits_json FROM habit_profile WHERE user_id = ?").get(task.user_id) as any;
-    let userTraitsStr = "pacing: standard, style: balanced";
+    let userTraitsStr = "Pacing: standard, style: balanced";
     if (habitProfileRow) {
       try {
         const traits = JSON.parse(habitProfileRow.traits_json);
-        userTraitsStr = `Pacing: ${traits.pace || 'standard'}, Focus hours: ${JSON.stringify(traits.focusHours || [])}, Risk tolerance: ${traits.riskTolerance || 'moderate'}`;
+        userTraitsStr = `Pacing: ${traits.pace || 'standard'}
+Focus hours: ${JSON.stringify(traits.focusHours || [])}
+Risk tolerance: ${traits.riskTolerance || 'moderate'}
+Work style: ${traits.workStyle || 'balanced'}
+Behavioral Traits: ${JSON.stringify(traits.traits || [])}
+Adaptive Planner Directions (MANDATORY): ${traits.planner_instructions || 'Align schedule standardly.'}`;
       } catch (_) {}
     }
 
@@ -50,24 +43,29 @@ export async function runPlannerAgent(taskId: number, userConstraints: string = 
     const currentDateStr = now.toISOString().split("T")[0];
     const deadlineDateStr = new Date(task.deadline).toISOString().split("T")[0];
 
-    // Total days range
-    const daysRangeText = `Today's date is ${currentDateStr}. The task deadline is ${deadlineDateStr}.`;
+    const msDiff = new Date(task.deadline).getTime() - now.getTime();
+    const hoursDiff = msDiff / (1000 * 60 * 60);
+    const hasMoreThanADay = hoursDiff >= 24;
+
+    const aiClient = getGeminiClient();
 
     // 3. Consult Gemini to draft a precise roadmap
-    if (!ai) {
+    if (!aiClient) {
       // Fallback if Gemini key is missing
       console.warn("Gemini is not configured. Creating simple linear schedule block fallback.");
-      const daysDiff = Math.max(1, Math.ceil((new Date(task.deadline).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+      const daysDiff = Math.max(1, Math.ceil(msDiff / (1000 * 60 * 60 * 24)));
       const blocks: { date: string; hours: number }[] = [];
       const hoursPerDay = task.importance === 'high' ? 3 : task.importance === 'medium' ? 1.5 : 0.5;
 
-      for (let i = 0; i < Math.min(daysDiff, 14); i++) {
-        const d = new Date();
-        d.setDate(now.getDate() + i);
-        blocks.push({
-          date: d.toISOString().split("T")[0],
-          hours: hoursPerDay
-        });
+      if (hasMoreThanADay) {
+        for (let i = 0; i < Math.min(daysDiff, 14); i++) {
+          const d = new Date();
+          d.setDate(now.getDate() + i);
+          blocks.push({
+            date: d.toISOString().split("T")[0],
+            hours: hoursPerDay
+          });
+        }
       }
 
       // Save blocks
@@ -77,21 +75,25 @@ export async function runPlannerAgent(taskId: number, userConstraints: string = 
         insertBlock.run(taskId, b.date, b.hours);
       }
 
+      const fallbackMsg = hasMoreThanADay 
+        ? `Linear scheduling fallback: ${hoursPerDay} hours/day budgeted over ${daysDiff} days.`
+        : "Deadline is in less than a day. No hourly schedule blocks allocated.";
+
       db.prepare(`
         UPDATE tasks 
         SET planner_roadmap = ?, planner_impossible = 0, planner_impossible_reason = NULL 
         WHERE id = ?
-      `).run(`Linear scheduling fallback: ${hoursPerDay} hours/day budgeted over ${daysDiff} days.`, taskId);
+      `).run(fallbackMsg, taskId);
 
       return {
-        roadmap_text: `Linear scheduling fallback: ${hoursPerDay} hours/day budgeted over ${daysDiff} days.`,
+        roadmap_text: fallbackMsg,
         impossible: false,
         impossible_reason: "",
         blocks
       };
     }
 
-    // Prepare prompt
+    // Prepare prompt with explicit task description analysis and time availability rules
     const prompt = `
 You are SAUVEUR The Planner, an elite cognitive scheduling and resource allocation agent.
 A user has a task that must be fully executed and delivered before the specified deadline.
@@ -102,29 +104,43 @@ Title: "${task.title}"
 Description: "${task.description || 'No description provided.'}"
 Deadline Date: "${deadlineDateStr}"
 Current Date: "${currentDateStr}"
-Importance Level: "${task.importance}" (high requires more hours, medium is standard, low is light)
+Importance Level: "${task.importance}"
 
 === USER TRAITS ===
 ${userTraitsStr}
 
 === NEW SCHEDULING CONSTRAINTS / RESHUFFLE COMMANDS ===
-User remarks: "${userConstraints || 'None'}" (e.g. "I'm busy Tuesday", "I have an event Day 2", "I cannot work on Friday")
+User remarks: "${userConstraints || 'None'}"
 
 === RULES OF ENGAGEMENT ===
-1. Generate an hour budget for each calendar date starting from "${currentDateStr}" up to and including "${deadlineDateStr}".
-2. Adapt the schedule dynamically to the user's remarks. If they are busy on a specific date or day of the week, set the hour budget for that day to 0 (or near 0) and re-distribute/push those hours onto the remaining free days.
-3. Total estimated hours should align with the importance:
-   - "high" importance: 8 to 18 hours total.
-   - "medium" importance: 4 to 8 hours total.
-   - "low" importance: 1 to 3 hours total.
-4. MAXIMUM hours per single day is 12 hours. If the user constraints and deadline proximity make it mathematically impossible to fit the required hours (e.g. deadline is tomorrow, but the user says they are busy all day today and tomorrow, or the required daily load exceeds 12 hours), set "impossible" to true, state the reasons clearly in "impossible_reason", and distribute the workload as best as physically possible.
-5. Provide a beautiful, highly professional and encouraging overview in "roadmap_text" explaining the allocation of hours and pacing strategy.
+1. GAIN INFERENCE OF THE TASK FROM DESCRIPTION AND TITLE:
+   - Carefully analyze the task title and description. Deduce the realistic workload and hours required.
+   - Do NOT just default to rigid generic ranges if the description implies a very simple task. For example, a simple email draft should only require 0.5 to 1 hour, whereas a complex presentation layout may require 4 to 8 hours.
+   
+2. TIME AVAILABILITY ASSESSMENT:
+   - There are exactly ${hoursDiff.toFixed(1)} hours (approx. ${(hoursDiff / 24).toFixed(1)} days) remaining between the current time and the deadline.
+   - CRITICAL REQUIREMENT: It only makes sense to allot daily hour-wise schedule blocks if there is at least a WHOLE day (24 hours or more) available before the deadline based on the task.
+   - If there is LESS than 24 hours available before the deadline, or if the time frame is too small relative to the task scope, you MUST NOT allot any hour-wise blocks. In this case, keep the "blocks" list empty: [].
+   - If there is at least 24 hours available, budget the hour-wise schedule blocks on the calendar up to the deadline.
+   - If the task is extremely trivial and can be done in a single short session, you may also keep the blocks empty if multi-day allocation makes no sense.
+
+3. ADAPTIVE SCHEDULING ENFORCEMENT:
+   - Carefully read the "Adaptive Planner Directions" in the USER TRAITS section.
+   - If the instructions state the user is a procrastinator, front-load their schedule with smaller, concentrated blocks, and set an earlier internal deadline in the roadmap description than the real one.
+   - If the user is a frequent deadline misser, schedule the blocks to start sooner and provide explicit daily session hour targets in your roadmap narrative.
+   - If the user is a fast worker, allocate tighter, more concentrated hour budgets.
+   - Strictly follow any other constraints defined in the Adaptive Planner Directions.
+
+4. If allotting blocks, generate an hour budget for each calendar date starting from "${currentDateStr}" up to and including "${deadlineDateStr}".
+5. Adapt the schedule dynamically to the user's remarks. If they are busy on a specific date or day of the week, set the hour budget for that day to 0 (or near 0).
+6. MAXIMUM hours per single day is 12 hours. If it is mathematically impossible to complete on time given the remaining time and constraints, set "impossible" to true and describe why in "impossible_reason".
+7. Provide an encouraging, highly professional overview in "roadmap_text" explaining the allocation of hours and pacing strategy.
 
 Respond strictly in JSON format matching this schema:
 {
   "roadmap_text": "An elegant, human-centric overview of the daily hour roadmap and strategy.",
-  "impossible": false, // true if mathematically impossible to complete on time given the constraints
-  "impossible_reason": "", // explanation of the conflict if impossible
+  "impossible": false,
+  "impossible_reason": "",
   "blocks": [
     { "date": "YYYY-MM-DD", "hours": 2.5 }
   ]
@@ -132,8 +148,8 @@ Respond strictly in JSON format matching this schema:
 Do NOT wrap in markdown block, just return raw JSON.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateContentWithRetry(aiClient, {
+      model: "gemini-2.5-flash-lite",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -142,6 +158,12 @@ Do NOT wrap in markdown block, just return raw JSON.
 
     const text = response.text ? response.text.trim() : "{}";
     const result: PlannerResult = JSON.parse(text);
+
+    // Hard programmatic guard to enforce no schedule blocks if there is less than a whole day (24 hours) available
+    if (!hasMoreThanADay) {
+      result.blocks = [];
+      result.roadmap_text = "As the deadline is in less than a whole day, no daily scheduling blocks are allocated. The task should be executed in one immediate continuous session.";
+    }
 
     // Save schedule blocks to database
     db.transaction(() => {

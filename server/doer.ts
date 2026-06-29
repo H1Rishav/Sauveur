@@ -3,21 +3,12 @@ import path from "path";
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
 import db from "./db.js";
 import { sendMail } from "./mail.js";
+import PDFDocument from "pdfkit";
+import pptxgen from "pptxgenjs";
+import { getGeminiClient, generateContentWithRetry } from "./gemini_client.js";
 
 // Initialize Gemini Client
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-export let ai: GoogleGenAI | null = null;
-if (GEMINI_API_KEY) {
-  ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
-  });
-}
+export let ai: GoogleGenAI | null = getGeminiClient();
 
 // Ensure Directories Exist
 const artifactsDir = path.resolve(process.cwd(), "artifacts");
@@ -166,45 +157,57 @@ function handleGeneratePptx(taskId: number, filename: string, slide_deck_json: s
   const finalFilename = filename.endsWith(".pptx") ? filename : `${filename}.pptx`;
   const filePath = path.join(artifactsDir, finalFilename);
   
-  let slides = [];
+  let slides: any[] = [];
   try {
     slides = JSON.parse(slide_deck_json);
   } catch (err) {
     slides = [{ slideTitle: "Slide 1", bulletPoints: [slide_deck_json] }];
   }
   
-  // We write an HTML-based responsive Presentation outline labeled .pptx
-  let slideHtml = `
-    <html>
-    <head>
-      <title>Presentation Outline</title>
-      <style>
-        body { background: #030712; color: #f9fafb; font-family: system-ui, sans-serif; padding: 40px; }
-        .slide { background: #0b0f19; border: 1px solid #1f2937; border-radius: 12px; padding: 32px; margin-bottom: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
-        h2 { color: #f59e0b; border-bottom: 1px solid #374151; padding-bottom: 10px; margin-top: 0; font-size: 22px; }
-        ul { margin-top: 15px; padding-left: 20px; }
-        li { margin-bottom: 10px; font-size: 15px; color: #e5e7eb; }
-        .logo { font-size: 11px; text-transform: uppercase; color: #6b7280; letter-spacing: 2px; text-align: right; }
-      </style>
-    </head>
-    <body>
-      <h1 style="text-align: center; color: #f9fafb; font-size: 28px; margin-bottom: 40px;">Presentation: ${filename.replace(".pptx", "")}</h1>
-  `;
+  const pptx = new pptxgen();
   
   slides.forEach((slide: any, idx: number) => {
-    slideHtml += `
-      <div class="slide">
-        <h2>Slide ${idx + 1}: ${slide.slideTitle || "Untitled Slide"}</h2>
-        <ul>
-          ${(slide.bulletPoints || []).map((point: string) => `<li>${point}</li>`).join("")}
-        </ul>
-        <div class="logo">SAUVEUR PRESENTATION CO-PILOT</div>
-      </div>
-    `;
+    const newSlide = pptx.addSlide();
+    
+    // Add background color
+    newSlide.background = { fill: "0F172A" }; // Slate-900 background
+    
+    // Add slide title
+    newSlide.addText(slide.slideTitle || `Slide ${idx + 1}`, {
+      x: 0.5,
+      y: 0.5,
+      w: 9,
+      h: 0.8,
+      fontSize: 24,
+      bold: true,
+      color: "F59E0B" // Amber-500
+    });
+    
+    // Add bullet points
+    const bullets = (slide.bulletPoints || []).map((pt: string) => ({
+      text: pt,
+      options: { bullet: true, fontSize: 16, color: "E2E8F0" }
+    }));
+    
+    if (bullets.length > 0) {
+      newSlide.addText(bullets, {
+        x: 0.5,
+        y: 1.5,
+        w: 9,
+        h: 5.0,
+        valign: "top"
+      });
+    }
   });
   
-  slideHtml += "</body></html>";
-  fs.writeFileSync(filePath, slideHtml, "utf-8");
+  // Write the presentation file on Node
+  pptx.writeFile({ fileName: filePath })
+    .then(() => {
+      console.log(`PPTX file written successfully to ${filePath}`);
+    })
+    .catch((err) => {
+      console.error("Failed to write PPTX presentation:", err);
+    });
   
   // Save artifact to database
   const result = db.prepare(`
@@ -249,35 +252,44 @@ function handleGeneratePdf(taskId: number, filename: string, content_html_or_tex
   const finalFilename = filename.endsWith(".pdf") ? filename : `${filename}.pdf`;
   const filePath = path.join(artifactsDir, finalFilename);
   
-  // Generates beautifully formatted HTML representing pdf format
-  const formattedHtml = `
-    <html>
-    <head>
-      <title>${filename}</title>
-      <style>
-        body { font-family: 'Courier New', monospace; line-height: 1.5; color: #111; padding: 50px; background: #fff; }
-        .header { border-bottom: 2px double #111; padding-bottom: 12px; margin-bottom: 30px; text-align: center; }
-        .header h1 { font-size: 20px; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
-        .meta { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 30px; }
-        .content { font-size: 12px; white-space: pre-wrap; }
-        .footer { margin-top: 50px; border-top: 1px dashed #111; padding-top: 10px; font-size: 10px; text-align: center; color: #666; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Official Report</h1>
-      </div>
-      <div class="meta">
-        <div>TASK ID: #${taskId}</div>
-        <div>DATE: ${new Date().toLocaleDateString()}</div>
-      </div>
-      <div class="content">${content_html_or_text}</div>
-      <div class="footer">OFFICIAL AUDIT REPORT GENERATED BY SAUVEUR AUTONOMOUS DOER PIPELINE.</div>
-    </body>
-    </html>
-  `;
-  
-  fs.writeFileSync(filePath, formattedHtml, "utf-8");
+  // Clean plain text by removing HTML tags
+  const cleanText = content_html_or_text
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
+  try {
+    const doc = new PDFDocument({ margin: 50 });
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+    
+    // Header
+    doc.fontSize(20).font("Helvetica-Bold").fillColor("#0F172A").text("OFFICIAL REPORT / ANALYSIS", { align: "center" });
+    doc.moveDown(1);
+    
+    // Metadata
+    doc.fontSize(10).font("Helvetica-Oblique").fillColor("#64748B").text(`TASK ID: #${taskId}`, { align: "left" });
+    doc.text(`GENERATED ON: ${new Date().toLocaleDateString()}`, { align: "left" });
+    doc.moveDown(1.5);
+    
+    // Main Content
+    doc.fontSize(11).font("Helvetica").fillColor("#1E293B").text(cleanText, {
+      align: "justify",
+      lineGap: 4
+    });
+    
+    // Footer
+    doc.moveDown(2);
+    doc.fontSize(8).font("Helvetica-Oblique").fillColor("#94A3B8").text("OFFICIAL AUDIT REPORT GENERATED AUTONOMOUSLY BY SAUVEUR AUTONOMOUS DOER PIPELINE.", { align: "center" });
+    
+    doc.end();
+  } catch (err) {
+    console.error("Failed to generate PDF document via pdfkit:", err);
+    // Fallback: write text representation so at least it's not empty, but pdfkit is stable
+    fs.writeFileSync(filePath, cleanText, "utf-8");
+  }
   
   // Save artifact to database
   const result = db.prepare(`
@@ -316,8 +328,12 @@ Respond strictly in JSON format matching this schema:
 }
 Do NOT wrap in markdown block, just return raw JSON.
     `;
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const aiClient = getGeminiClient();
+    if (!aiClient) {
+      throw new Error("Gemini API Client is not configured. Please add CUSTOM_GEMINI_API_KEY to Settings.");
+    }
+    const response = await generateContentWithRetry(aiClient, {
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -366,7 +382,7 @@ export async function runDoerJob(userId: number, taskId: number, customInstructi
   setTimeout(async () => {
     try {
       if (!ai) {
-        throw new Error("Gemini API Client is not configured. Please add GEMINI_API_KEY to Secrets.");
+        throw new Error("Gemini API Client is not configured. Please add CUSTOM_GEMINI_API_KEY to Settings.");
       }
 
       // --- PHASE 1: PERCEIVE ---
@@ -463,9 +479,13 @@ Please evaluate the description and instructions. Execute the required task-comp
 
       contentParts.push({ text: userPrompt });
 
+      const aiClient = getGeminiClient();
+      if (!aiClient) {
+        throw new Error("Gemini API Client is not configured. Please add CUSTOM_GEMINI_API_KEY to Settings.");
+      }
       // Query Gemini
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+      const response = await generateContentWithRetry(aiClient, {
+        model: "gemini-2.5-flash",
         contents: { parts: contentParts },
         config: {
           systemInstruction: "You are SAUVEUR The Doer, an incredibly precise, competent autonomous agent that executes user commands. You analyze voice instructions, descriptions, and file uploads. Choose and trigger one or more appropriate function calls to compile the files/artifacts requested. Maintain strict focus on high professional style matching user traits.",

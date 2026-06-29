@@ -14,6 +14,7 @@ interface TasksPageProps {
   onToggleMode: (taskId: number) => Promise<boolean>;
   onApproveTask: (taskId: number) => Promise<boolean>;
   onClearCompleted: () => Promise<boolean>;
+  onMomentumStart?: (taskId: number) => any;
   isLoading: boolean;
 }
 
@@ -26,6 +27,7 @@ export default function TasksPage({
   onToggleMode, 
   onApproveTask,
   onClearCompleted,
+  onMomentumStart,
   isLoading 
 }: TasksPageProps) {
   const [filter, setFilter] = useState<'all' | 'pending' | 'human_check' | 'completed'>('all');
@@ -132,6 +134,7 @@ export default function TasksPage({
             onToggleComplete={onToggleComplete}
             onToggleMode={onToggleMode}
             onApproveTask={onApproveTask}
+            onMomentumStart={onMomentumStart}
           />
         ))}
 

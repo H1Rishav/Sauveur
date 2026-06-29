@@ -48,10 +48,13 @@ export interface Task {
 
 export interface HabitProfile {
   focusHours: [number, number];
-  pace: 'deliberate' | 'aggressive';
-  riskTolerance: 'conservative' | 'aggressive';
+  pace: 'deliberate' | 'aggressive' | 'fast' | 'standard';
+  riskTolerance: 'conservative' | 'aggressive' | 'moderate';
   communication: 'editorial' | 'concise' | 'formal';
   workStyle: string;
+  traits?: string[];
+  planner_instructions?: string;
+  analysis?: string;
 }
 
 export interface RewardItem {
@@ -66,6 +69,7 @@ export interface RewardItem {
 export interface AgentAction {
   id: number;
   user_id: number;
+  task_id?: number;
   agent: 'The Doer' | 'The Planner' | 'The Profiler' | 'The Strategist';
   action: string;
   status: 'perceiving' | 'reasoning' | 'acting' | 'verifying' | 'completed' | 'failed';

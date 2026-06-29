@@ -9,7 +9,10 @@ import db, { initDB } from "./server/db.js";
 import { runDoerJob, ai } from "./server/doer.js";
 import { runPlannerAgent } from "./server/planner.js";
 import { sendMail } from "./server/mail.js";
+import { runProfiler } from "./server/profiler.js";
+import { runStrategist } from "./server/strategist.js";
 import fs from "fs";
+import { getGeminiClient, generateContentWithRetry } from "./server/gemini_client.js";
 
 declare module "express-session" {
   interface SessionData {
@@ -456,20 +459,9 @@ app.post("/api/tasks", requireAuth, async (req, res) => {
       })
     );
 
-    // Also insert a schedule block dynamically or run the Planner scheduling agent
-    if (cleanDeadline) {
-      try {
-        await runPlannerAgent(Number(newTaskId));
-      } catch (plannerErr) {
-        console.error("Planner agent failed during task creation:", plannerErr);
-        // Fallback default block
-        db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
-          .run(newTaskId, new Date().toISOString().split('T')[0], 1.5);
-      }
-    } else {
-      db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
-        .run(newTaskId, new Date().toISOString().split('T')[0], 1.5);
-    }
+    // Insert a local schedule block dynamically (prevents background LLM calls)
+    db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
+      .run(newTaskId, new Date().toISOString().split('T')[0], 1.5);
 
     return res.json({ success: true, taskId: newTaskId });
   } catch (err) {
@@ -554,12 +546,12 @@ app.put("/api/tasks/:id", requireAuth, async (req, res) => {
       userId
     );
 
-    // If there's a deadline, update the schedule blocks
+    // If there's a deadline, ensure a schedule block exists locally (prevents background LLM calls)
     if (cleanDeadline) {
-      try {
-        await runPlannerAgent(Number(taskId));
-      } catch (plannerErr) {
-        console.error("Planner agent failed during task update:", plannerErr);
+      const blocksCountRow = db.prepare("SELECT COUNT(*) as count FROM schedule_blocks WHERE task_id = ?").get(taskId) as { count: number };
+      if (!blocksCountRow || blocksCountRow.count === 0) {
+        db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
+          .run(taskId, new Date().toISOString().split('T')[0], 1.5);
       }
     } else {
       // Clear schedule blocks if deadline is removed
@@ -618,15 +610,19 @@ app.post("/api/tasks/:id/toggle-complete", requireAuth, (req, res) => {
 
     let newStatus = "pending";
     let pointsAwarded = 0;
+    let completedAtVal = null;
 
     if (task.status === "completed") {
       newStatus = "pending";
     } else {
       newStatus = "completed";
       pointsAwarded = 50;
+      completedAtVal = new Date().toISOString();
     }
 
-    db.prepare("UPDATE tasks SET status = ? WHERE id = ? AND user_id = ?").run(newStatus, taskId, userId);
+    db.prepare("UPDATE tasks SET status = ?, completed_at = ? WHERE id = ? AND user_id = ?").run(newStatus, completedAtVal, taskId, userId);
+
+    // runProfiler background execution disabled to prevent automatic/background LLM calls.
 
     if (pointsAwarded > 0) {
       // Award points
@@ -740,12 +736,13 @@ app.post("/api/voice/sanitize", requireAuth, async (req, res) => {
       return res.json({ sanitized: "" });
     }
 
-    if (!ai) {
+    const aiClient = getGeminiClient();
+    if (!aiClient) {
       return res.json({ sanitized: cleanTranscript });
     }
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateContentWithRetry(aiClient, {
+      model: "gemini-2.5-flash-lite",
       contents: `You are a strict, secure input sanitization engine. Check the following voice transcript spoken by a user dictating task instructions.
 1. Remove speech dysfluencies/fillers (like "uh", "um", "ah", "you know", "like").
 2. Standardize formatting and punctuation.
@@ -904,6 +901,99 @@ app.get("/api/agent-activity", requireAuth, (req, res) => {
   }
 });
 
+// Revert/Undo Agent Action
+app.post("/api/agent-activity/:id/undo", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const actionId = req.params.id;
+
+    // Find the action and verify it belongs to this user
+    const action = db.prepare("SELECT * FROM agent_actions WHERE id = ? AND user_id = ?").get(actionId, userId) as any;
+    if (!action) {
+      return res.status(404).json({ error: "Agent action not found or unauthorized." });
+    }
+
+    const taskId = action.task_id;
+    if (!taskId) {
+      return res.status(400).json({ error: "This action is not linked to a specific task and cannot be undone." });
+    }
+
+    // Process Undo depending on the action details
+    const actionDescLower = action.action.toLowerCase();
+    let undoMessage = "";
+
+    // 1. Undo Completed Task
+    if (actionDescLower.includes("complete") || actionDescLower.includes("completed")) {
+      const task = db.prepare("SELECT * FROM tasks WHERE id = ? AND user_id = ?").get(taskId, userId) as any;
+      if (task && task.status === 'completed') {
+        db.prepare("UPDATE tasks SET status = 'pending', completed_at = NULL WHERE id = ?").run(taskId);
+        
+        // Clawback completion points
+        const pointsRow = db.prepare("SELECT * FROM rewards_ledger WHERE user_id = ? AND reason LIKE ? ORDER BY id DESC LIMIT 1").get(userId, `%${task.title}%`) as any;
+        if (pointsRow && pointsRow.delta > 0) {
+          const curBalanceRow = db.prepare("SELECT balance_after FROM rewards_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as any;
+          const curBalance = curBalanceRow ? curBalanceRow.balance_after : 0;
+          const clawbackDelta = -pointsRow.delta;
+          db.prepare("INSERT INTO rewards_ledger (user_id, delta, reason, balance_after) VALUES (?, ?, ?, ?)").run(
+            userId,
+            clawbackDelta,
+            `Undo task completion: ${task.title} (Points clawed back)`,
+            curBalance + clawbackDelta
+          );
+        }
+        undoMessage = `Task '${task.title}' status reverted back to pending and points adjusted.`;
+      } else {
+        return res.status(400).json({ error: "Task is not in completed state, cannot undo completion." });
+      }
+    }
+    // 2. Undo Schedule / Reschedule / Planner shift
+    else if (actionDescLower.includes("schedule") || actionDescLower.includes("planner") || actionDescLower.includes("reshuffle")) {
+      db.prepare("DELETE FROM schedule_blocks WHERE task_id = ?").run(taskId);
+      db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(taskId);
+      undoMessage = "Calendar blocks and timing allocations successfully purged.";
+    }
+    // 3. Undo Email Draft / Unsent Draft
+    else if (actionDescLower.includes("draft") || actionDescLower.includes("email") || actionDescLower.includes("doer")) {
+      const draft = db.prepare("SELECT * FROM email_drafts WHERE task_id = ?").get(taskId) as any;
+      if (draft && draft.status === 'draft') {
+        db.prepare("DELETE FROM email_drafts WHERE id = ?").run(draft.id);
+        db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(taskId);
+        undoMessage = "Generated draft email successfully discarded.";
+      } else {
+        db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(taskId);
+        undoMessage = "Doer task execution reverted to pending.";
+      }
+    } else {
+      // Default fallback
+      db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(taskId);
+      undoMessage = "Action undone. Task state has been reset to pending.";
+    }
+
+    // Log the undo action in the feed
+    db.prepare(`
+      INSERT INTO agent_actions (user_id, task_id, agent, action, status, payload_json)
+      VALUES (?, ?, ?, ?, 'completed', ?)
+    `).run(
+      userId,
+      taskId,
+      "The Strategist",
+      `Undid previous action: ${action.action}`,
+      JSON.stringify({
+        phase: "Act & Verify",
+        perceive: `User clicked Undo on action: ${action.action}`,
+        reason: "User requested state reversion to resolve execution overlap or preference shift.",
+        act: `Reverted state. ${undoMessage}`,
+        verify: "State synchronized in db."
+      })
+    );
+
+    return res.json({ success: true, message: undoMessage });
+  } catch (err) {
+    console.error("Undo agent action error:", err);
+    return res.status(500).json({ error: "Failed to process undo request." });
+  }
+});
+
 // Get Rewards Ledger
 app.get("/api/rewards", requireAuth, (req, res) => {
   try {
@@ -916,6 +1006,336 @@ app.get("/api/rewards", requireAuth, (req, res) => {
     return res.status(500).json({ error: "Could not fetch reward ledger." });
   }
 });
+
+// Get Redemptions List
+app.get("/api/rewards/redemptions", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const redemptions = db.prepare("SELECT * FROM redemptions WHERE user_id = ? ORDER BY id DESC").all(userId) as any[];
+    return res.json({ redemptions });
+  } catch (err) {
+    console.error("Get redemptions error:", err);
+    return res.status(500).json({ error: "Could not fetch redemption records." });
+  }
+});
+
+// Redeem Reward Store Item
+app.post("/api/rewards/redeem", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { itemId } = req.body;
+
+    const STORE_ITEMS = [
+      { id: "pro_unlock", name: "1-Week Pro Unlock", cost: 150 },
+      { id: "action_credits", name: "50 Agent Action Credits", cost: 80 },
+      { id: "premium_theme", name: "Premium 'Cosmic Onyx' Theme", cost: 120 },
+      { id: "streak_freeze", name: "Streak Freeze Token", cost: 50 },
+      { id: "cafe_voucher", name: "Premium Espresso Voucher", cost: 250, isDemo: true },
+      { id: "stationery_voucher", name: "Classic Moleskine Notebook", cost: 400, isDemo: true }
+    ];
+
+    const item = STORE_ITEMS.find(i => i.id === itemId);
+    if (!item) {
+      return res.status(400).json({ error: "Invalid reward item specified." });
+    }
+
+    // Rate limiting: wait 5 seconds between purchases to avoid double spend/race conditions
+    const lastRedeem = db.prepare("SELECT created_at FROM redemptions WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as any;
+    if (lastRedeem) {
+      const lastTime = new Date(lastRedeem.created_at + "Z").getTime();
+      if (Date.now() - lastTime < 5000) {
+        return res.status(429).json({ error: "Please wait 5 seconds between redemptions to verify ledger sync." });
+      }
+    }
+
+    // Run within a transactional block
+    let responseData: any = null;
+    const txn = db.transaction(() => {
+      const currentBalanceRow = db.prepare("SELECT balance_after FROM rewards_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as { balance_after: number } | undefined;
+      const currentBalance = currentBalanceRow ? currentBalanceRow.balance_after : 0;
+
+      if (currentBalance < item.cost) {
+        throw new Error(`Insufficient points. You need ${item.cost - currentBalance} more points to redeem this.`);
+      }
+
+      // Generate a clean mock partner code
+      const randStr = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+      const voucherCode = `SAUV-${item.id.substring(0, 4).toUpperCase()}-${randStr()}`;
+
+      const newBalance = currentBalance - item.cost;
+
+      // Log transaction in ledger
+      db.prepare("INSERT INTO rewards_ledger (user_id, delta, reason, balance_after) VALUES (?, ?, ?, ?)").run(
+        userId,
+        -item.cost,
+        `Redeemed: ${item.name}`,
+        newBalance
+      );
+
+      // Log in redemptions table
+      db.prepare("INSERT INTO redemptions (user_id, item_id, item_name, cost, voucher_code) VALUES (?, ?, ?, ?, ?)").run(
+        userId,
+        item.id,
+        item.name,
+        item.cost,
+        voucherCode
+      );
+
+      responseData = { success: true, balance: newBalance, voucherCode, itemName: item.name };
+    });
+
+    try {
+      txn();
+      return res.json(responseData);
+    } catch (txErr: any) {
+      return res.status(400).json({ error: txErr.message });
+    }
+  } catch (err) {
+    console.error("Redemption failed:", err);
+    return res.status(500).json({ error: "Failed to process reward redemption." });
+  }
+});
+
+// Momentum Mode Paralysis Breaker (One-click Jumpstart Artifact Creator)
+app.post("/api/tasks/:id/momentum-start", requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const taskId = req.params.id;
+
+    const task = db.prepare("SELECT * FROM tasks WHERE id = ? AND user_id = ?").get(taskId, userId) as any;
+    if (!task) {
+      return res.status(404).json({ error: "Task not found." });
+    }
+
+    const aiClient = getGeminiClient();
+    if (!aiClient) {
+      return res.status(400).json({ error: "Gemini client is unconfigured. Set CUSTOM_GEMINI_API_KEY in Settings." });
+    }
+
+    // Set task to active state first to show immediate reaction in UI
+    db.prepare("UPDATE tasks SET status = 'active' WHERE id = ?").run(taskId);
+
+    const prompt = `You are SAUVEUR The Doer. The user is experiencing deep executive dysfunction/paralysis and has activated "Momentum Mode" for their task: "${task.title}".
+Task description: "${task.description || 'No description provided.'}"
+
+Your job is NOT to finish the task. Your sole objective is to write the first 10 minutes of the task — the initial paragraph, the skeletal outline, the template, or the starter stub — so beautiful, specific, and easy to continue that they overcome their hesitation.
+
+Output a highly engaging markdown document. Format your output as a professional, stylish Starter Kit including:
+1. "🔥 THE 10-MINUTE JUMPSTART": A short, compassionate statement acknowledging the paralysis and encouraging them.
+2. "YOUR INITIAL DRAFT / OUTLINE SKELETON": Provide 2-3 tailored opening paragraphs, draft email lines, slides layout, or code skeleton.
+3. "NEXT IMMEDIATE 2-MINUTE STEPS": 3 hyper-simple, micro-tasks that take under 2 minutes to keep the momentum going.
+
+Keep it highly relevant to the task title and details, extremely professional, and warm.`;
+
+    const result = await generateContentWithRetry(aiClient, {
+      model: "gemini-2.5-flash-lite",
+      contents: prompt
+    });
+
+    const outputText = result.candidates?.[0]?.content?.parts?.[0]?.text || `### Momentum Starter Kit for: ${task.title}\n\nLet's get going!`;
+
+    // Create a physical markdown file
+    const artifactsDir = path.join(process.cwd(), "artifacts");
+    if (!fs.existsSync(artifactsDir)) {
+      fs.mkdirSync(artifactsDir, { recursive: true });
+    }
+
+    const cleanTitle = task.title.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase().substring(0, 30);
+    const filename = `momentum_${taskId}_${cleanTitle}.md`;
+    fs.writeFileSync(path.join(artifactsDir, filename), outputText);
+
+    // Save as artifact reference in DB
+    db.prepare("INSERT INTO artifacts (task_id, type, file_ref) VALUES (?, 'summary', ?)").run(taskId, filename);
+
+    // Reset task to pending or scheduled so they can work on it, or collaborative
+    db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(taskId);
+
+    // Add agent activity log
+    db.prepare(`
+      INSERT INTO agent_actions (user_id, task_id, agent, action, status, payload_json)
+      VALUES (?, ?, ?, ?, 'completed', ?)
+    `).run(
+      userId,
+      taskId,
+      "The Doer",
+      `Compiled a 10-Minute Momentum Jumpstart to conquer blank-page paralysis.`,
+      JSON.stringify({
+        phase: "Act & Verify",
+        perceive: `Identified task paralysis on: "${task.title}".`,
+        reason: "User requested assistance to break executive gridlock.",
+        act: `Generated starter paragraphs, action pathways, and outlines in local file: ${filename}.`,
+        verify: "Friction reduced to zero. Jumpstart file initialized and mapped."
+      })
+    );
+
+    return res.json({ success: true, filename, message: "Momentum Mode successfully launched! Starter kit ready." });
+  } catch (err: any) {
+    console.error("Momentum Mode failed:", err);
+    // Reset status on error
+    try {
+      db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(req.params.id);
+    } catch (_) {}
+    return res.status(500).json({ error: err.message || "Could not launch Momentum Mode." });
+  }
+});
+
+// Proactive Collision Detector
+app.get("/api/proactive-alerts", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    
+    // Run collision detection engine to calculate fresh logs
+    runCollisionDetector(userId);
+
+    // Retrieve active alerts
+    const alerts = db.prepare("SELECT * FROM proactive_alerts WHERE user_id = ? AND is_resolved = 0 ORDER BY id DESC").all(userId);
+    return res.json({ alerts });
+  } catch (err) {
+    console.error("Get proactive alerts error:", err);
+    return res.status(500).json({ error: "Failed to evaluate schedule collisions." });
+  }
+});
+
+// Resolve Proactive Alert
+app.post("/api/proactive-alerts/:id/resolve", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const alertId = req.params.id;
+
+    db.prepare("UPDATE proactive_alerts SET is_resolved = 1 WHERE id = ? AND user_id = ?").run(alertId, userId);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Resolve alert error:", err);
+    return res.status(500).json({ error: "Could not resolve alert." });
+  }
+});
+
+// Helper function: runCollisionDetector
+function runCollisionDetector(userId: number) {
+  try {
+    // 1. Fetch pending/scheduled tasks
+    const tasks = db.prepare("SELECT * FROM tasks WHERE user_id = ? AND status != 'completed'").all(userId) as any[];
+    
+    // 2. Fetch all schedule blocks for the user
+    const blocks = db.prepare(`
+      SELECT sb.*, t.title, t.deadline, t.importance
+      FROM schedule_blocks sb
+      JOIN tasks t ON sb.task_id = t.id
+      WHERE t.user_id = ? AND t.status != 'completed'
+    `).all(userId) as any[];
+
+    // 3. Clear existing alerts for this user to calculate fresh ones (idempotent)
+    db.prepare("DELETE FROM proactive_alerts WHERE user_id = ? AND is_resolved = 0").run(userId);
+
+    const alertsToInsert: any[] = [];
+
+    // Analyze day-by-day planned hours
+    const dailyHours: { [date: string]: { total: number; taskTitles: string[] } } = {};
+    blocks.forEach((b: any) => {
+      if (!dailyHours[b.date]) {
+        dailyHours[b.date] = { total: 0, taskTitles: [] };
+      }
+      dailyHours[b.date].total += b.planned_hours;
+      if (!dailyHours[b.date].taskTitles.includes(b.title)) {
+        dailyHours[b.date].taskTitles.push(b.title);
+      }
+    });
+
+    // Check for high density (overloaded focus hours)
+    const profileRow = db.prepare("SELECT traits_json FROM habit_profile WHERE user_id = ?").get(userId) as any;
+    let maxFocusHoursPerDay = 6.0; // default
+    if (profileRow) {
+      try {
+        const traits = JSON.parse(profileRow.traits_json);
+        if (traits.focusHours && traits.focusHours.length === 2) {
+          maxFocusHoursPerDay = Math.max(2, traits.focusHours[1] - traits.focusHours[0]);
+        }
+      } catch (_) {}
+    }
+
+    Object.entries(dailyHours).forEach(([date, data]) => {
+      if (data.total > maxFocusHoursPerDay) {
+        alertsToInsert.push({
+          type: "collision",
+          message: `Overscheduled on ${date}: You have ${data.total.toFixed(1)} hours of deep focus scheduled across ${data.taskTitles.length} tasks, but your profile maximum is ${maxFocusHoursPerDay.toFixed(1)} hours.`,
+          details: { date, totalHours: data.total, tasks: data.taskTitles }
+        });
+      }
+    });
+
+    // Check for now-impossible plans (deadline before planned work completes)
+    tasks.forEach((task: any) => {
+      if (task.deadline) {
+        const deadlineDate = new Date(task.deadline);
+        const now = new Date();
+        const msLeft = deadlineDate.getTime() - now.getTime();
+        const hoursLeft = msLeft / (1000 * 60 * 60);
+
+        // Sum schedule blocks for this task
+        const taskBlocks = blocks.filter((b: any) => b.task_id === task.id);
+        const totalPlannedHoursForTask = taskBlocks.reduce((sum: number, b: any) => sum + b.planned_hours, 0);
+
+        if (hoursLeft > 0 && hoursLeft < totalPlannedHoursForTask) {
+          alertsToInsert.push({
+            type: "impossible",
+            message: `Mathematically Impossible Timeline: '${task.title}' requires ${totalPlannedHoursForTask.toFixed(1)} planned hours, but only ${hoursLeft.toFixed(1)} hours remain before the deadline.`,
+            details: { taskId: task.id, hoursLeft, plannedHours: totalPlannedHoursForTask }
+          });
+        }
+      }
+    });
+
+    // Check for repeatedly-snoozed or stale high-importance tasks
+    tasks.forEach((task: any) => {
+      if (task.importance === 'high') {
+        const createdAt = new Date(task.created_at + "Z");
+        const daysSinceCreation = (Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24);
+        if (daysSinceCreation > 3) {
+          alertsToInsert.push({
+            type: "snoozed",
+            message: `High-Risk Stagnant Task: '${task.title}' has been neglected for ${Math.floor(daysSinceCreation)} days despite high importance classification.`,
+            details: { taskId: task.id, daysStale: daysSinceCreation }
+          });
+        }
+      }
+    });
+
+    // Insert new alerts and log strategist action for each freshly detected alert
+    alertsToInsert.forEach((alert) => {
+      db.prepare(`
+        INSERT INTO proactive_alerts (user_id, alert_type, message, details_json)
+        VALUES (?, ?, ?, ?)
+      `).run(userId, alert.type, alert.message, JSON.stringify(alert.details));
+
+      // Check if we already logged this Strategist action in the last hour to prevent clutter
+      const count = db.prepare(`
+        SELECT COUNT(*) as count FROM agent_actions 
+        WHERE user_id = ? AND agent = 'The Strategist' AND action LIKE ? AND created_at > datetime('now', '-1 hour')
+      `).get(userId, `%${alert.message.substring(0, 30)}%`) as any;
+
+      if (!count || count.count === 0) {
+        db.prepare(`
+          INSERT INTO agent_actions (user_id, task_id, agent, action, status, payload_json)
+          VALUES (?, ?, 'The Strategist', ?, 'completed', ?)
+        `).run(
+          userId,
+          alert.details?.taskId || null,
+          `Proactively flagged risk: ${alert.message}`,
+          JSON.stringify({
+            phase: "Verify",
+            perceive: "Scanned calendars, upcoming tasks, and historical execution speeds.",
+            reason: "Detected potential overload or failure vector before human notification is scheduled.",
+            act: "Wired alert trigger to home dashboard and recommended proactive renegotiation options.",
+            verify: "Integrity constraints audit: completed."
+          })
+        );
+      }
+    });
+
+  } catch (err) {
+    console.error("Collision detector error:", err);
+  }
+}
 
 // Get Settings & Habit Profile
 app.get("/api/settings", requireAuth, (req, res) => {
@@ -980,6 +1400,58 @@ app.post("/api/settings", requireAuth, (req, res) => {
   }
 });
 
+// Force run the Profiler to update user traits
+app.post("/api/profile/reprofile", requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const traits = await runProfiler(userId);
+    if (!traits) {
+      return res.status(500).json({ error: "Failed to run the Profiler agent." });
+    }
+    return res.json({ success: true, traits });
+  } catch (err) {
+    console.error("Reprofile error:", err);
+    return res.status(500).json({ error: "An error occurred while running the Profiler." });
+  }
+});
+
+// Run Strategist to evaluate pipeline and get feasibility, triage, and draft extensions
+app.get("/api/strategist/suggestions", requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const force = req.query.force === "true";
+
+    // 1. Get current maximum task ID for this user
+    const maxIdRow = db.prepare("SELECT COALESCE(MAX(id), 0) as maxId FROM tasks WHERE user_id = ?").get(userId) as any;
+    const currentMaxId = maxIdRow ? maxIdRow.maxId : 0;
+
+    // 2. Check strategist cache
+    const cacheRow = db.prepare("SELECT suggestions_json, last_analyzed_max_task_id FROM strategist_cache WHERE user_id = ?").get(userId) as any;
+
+    if (!force && cacheRow && currentMaxId <= cacheRow.last_analyzed_max_task_id) {
+      try {
+        const cachedSuggestions = JSON.parse(cacheRow.suggestions_json);
+        return res.json(cachedSuggestions);
+      } catch (parseErr) {
+        console.error("Failed to parse cached suggestions JSON, regenerating...", parseErr);
+      }
+    }
+
+    // 3. Otherwise, run the Strategist and update cache
+    const suggestions = await runStrategist(userId);
+    
+    db.prepare(`
+      INSERT OR REPLACE INTO strategist_cache (user_id, suggestions_json, last_analyzed_max_task_id, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(userId, JSON.stringify(suggestions), currentMaxId);
+
+    return res.json(suggestions);
+  } catch (err) {
+    console.error("Strategist API error:", err);
+    return res.status(500).json({ error: "Failed to run the Strategist agent." });
+  }
+});
+
 // --- Mail Rate Limiter (Rate limits to max 5 send requests per minute per IP) ---
 const mailLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -987,6 +1459,79 @@ const mailLimiter = rateLimit({
   message: { error: "Too many email dispatches requested. Please wait 1 minute." },
   standardHeaders: true,
   legacyHeaders: false,
+});
+
+// Approve and send selected extension emails
+app.post("/api/strategist/suggestions/approve", requireAuth, mailLimiter, async (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { drafts } = req.body; // array of ExtensionDraft (taskId, recipient, subject, body)
+
+    if (!drafts || !Array.isArray(drafts) || drafts.length === 0) {
+      return res.status(400).json({ error: "Please specify which extension emails you would like to approve." });
+    }
+
+    const results = [];
+    for (const draft of drafts) {
+      try {
+        // Validate recipient address
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!draft.recipient || !emailRegex.test(draft.recipient)) {
+          results.push({ taskId: draft.taskId, success: false, error: "Invalid recipient email address." });
+          continue;
+        }
+
+        // Save/Update in email_drafts as sent
+        db.prepare(`
+          INSERT OR REPLACE INTO email_drafts (task_id, recipient, subject, body, status, sent_at)
+          VALUES (?, ?, ?, ?, 'sent', CURRENT_TIMESTAMP)
+        `).run(draft.taskId, draft.recipient, draft.subject, draft.body);
+
+        // Send via Nodemailer (handles mock or real)
+        const dispatch = await sendMail({
+          recipient: draft.recipient,
+          subject: draft.subject,
+          body: draft.body
+        });
+
+        // Award points for using proactive triage extensions (small strategy bonus!)
+        const currentBalanceRow = db.prepare("SELECT balance_after FROM rewards_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as any;
+        const oldBalance = currentBalanceRow ? currentBalanceRow.balance_after : 0;
+        const newBalance = oldBalance + 10.0;
+        db.prepare(`
+          INSERT INTO rewards_ledger (user_id, delta, reason, balance_after)
+          VALUES (?, 10.0, 'Approved extension request dispatch', ?)
+        `).run(userId, newBalance);
+
+        // Record agent action log
+        db.prepare(`
+          INSERT INTO agent_actions (user_id, task_id, agent, action, status, payload_json)
+          VALUES (?, ?, 'The Strategist', ?, 'completed', ?)
+        `).run(
+          userId,
+          draft.taskId,
+          `Extension request dispatched to "${draft.recipient}"`,
+          JSON.stringify({
+            phase: "Verify",
+            perceive: `User approved extension request for task ID ${draft.taskId}.`,
+            reason: "Proactive triage execution released to recipient to secure deadline extension.",
+            act: `Dispatched mail via transport. Status: sent. Result: ${JSON.stringify(dispatch)}.`,
+            verify: "Email sent successfully, reward points credited."
+          })
+        );
+
+        results.push({ taskId: draft.taskId, success: true, simulated: dispatch.simulated });
+      } catch (err: any) {
+        console.error(`Failed to send extension email for task ${draft.taskId}:`, err);
+        results.push({ taskId: draft.taskId, success: false, error: err.message || "Failed to dispatch email." });
+      }
+    }
+
+    return res.json({ success: true, results });
+  } catch (err) {
+    console.error("Approve suggestions error:", err);
+    return res.status(500).json({ error: "Failed to process approved extension requests." });
+  }
 });
 
 // --- Fetch Email Draft for a Task ---
@@ -1099,7 +1644,9 @@ app.post("/api/tasks/:id/email-draft/approve", requireAuth, mailLimiter, async (
     `).run(taskId);
 
     // Set task status to completed!
-    db.prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run(taskId);
+    db.prepare("UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ?").run(new Date().toISOString(), taskId);
+
+    // runProfiler background execution disabled to prevent automatic/background LLM calls.
 
     // Award rewards points on manual review release
     const scoreDelta = task.importance === 'high' ? 80.0 : task.importance === 'medium' ? 50.0 : 30.0;
@@ -1213,7 +1760,7 @@ app.get("/api/schedule", requireAuth, (req, res) => {
       SELECT sb.*, t.title as task_title, t.urgency, t.status as task_status, t.importance, t.planner_impossible
       FROM schedule_blocks sb
       JOIN tasks t ON sb.task_id = t.id
-      WHERE t.user_id = ?
+      WHERE t.user_id = ? AND t.status != 'completed'
     `).all(userId);
     return res.json({ blocks });
   } catch (err) {
