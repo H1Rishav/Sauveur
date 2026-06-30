@@ -459,9 +459,17 @@ app.post("/api/tasks", requireAuth, async (req, res) => {
       })
     );
 
-    // Insert a local schedule block dynamically (prevents background LLM calls)
-    db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
-      .run(newTaskId, new Date().toISOString().split('T')[0], 1.5);
+    // Run Planner immediately if deadline exists to distribute work blocks across days
+    if (cleanDeadline) {
+      try {
+        await runPlannerAgent(Number(newTaskId));
+      } catch (plannerErr) {
+        console.error("Error running planner on task creation:", plannerErr);
+        // Fallback: single block if planner crashes entirely
+        db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
+          .run(newTaskId, new Date().toISOString().split('T')[0], 1.5);
+      }
+    }
 
     return res.json({ success: true, taskId: newTaskId });
   } catch (err) {
@@ -546,12 +554,17 @@ app.put("/api/tasks/:id", requireAuth, async (req, res) => {
       userId
     );
 
-    // If there's a deadline, ensure a schedule block exists locally (prevents background LLM calls)
+    // If there's a deadline, run Planner immediately to compute or update the hourly schedule blocks
     if (cleanDeadline) {
-      const blocksCountRow = db.prepare("SELECT COUNT(*) as count FROM schedule_blocks WHERE task_id = ?").get(taskId) as { count: number };
-      if (!blocksCountRow || blocksCountRow.count === 0) {
-        db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
-          .run(taskId, new Date().toISOString().split('T')[0], 1.5);
+      try {
+        await runPlannerAgent(Number(taskId));
+      } catch (plannerErr) {
+        console.error("Error running planner on task update:", plannerErr);
+        const blocksCountRow = db.prepare("SELECT COUNT(*) as count FROM schedule_blocks WHERE task_id = ?").get(taskId) as { count: number };
+        if (!blocksCountRow || blocksCountRow.count === 0) {
+          db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)")
+            .run(taskId, new Date().toISOString().split('T')[0], 1.5);
+        }
       }
     } else {
       // Clear schedule blocks if deadline is removed
@@ -589,6 +602,7 @@ app.delete("/api/tasks/:id", requireAuth, (req, res) => {
     }
 
     db.prepare("DELETE FROM tasks WHERE id = ? AND user_id = ?").run(taskId, userId);
+    db.prepare("DELETE FROM strategist_cache WHERE user_id = ?").run(userId);
 
     return res.json({ success: true });
   } catch (err) {
@@ -1355,7 +1369,7 @@ app.get("/api/settings", requireAuth, (req, res) => {
 });
 
 // Update Settings & Habit Profile
-app.post("/api/settings", requireAuth, (req, res) => {
+app.post("/api/settings", requireAuth, async (req, res) => {
   try {
     const userId = req.session.userId;
     const { pace, riskTolerance, communication, workStyle, focusHoursStart, focusHoursEnd } = req.body;
@@ -1392,6 +1406,22 @@ app.post("/api/settings", requireAuth, (req, res) => {
         verify: "Checked bounds: Focus interval length validated. Memory matrix synchronized."
       })
     );
+
+    // Run the Profiler automatically to sync habits
+    await runProfiler(userId);
+
+    // Invalidate strategist cache to force recalculation with updated parameters
+    db.prepare("DELETE FROM strategist_cache WHERE user_id = ?").run(userId);
+
+    // Rerun the Planner agent on all active, incomplete tasks with deadlines to align with new habits/style
+    const activeTasks = db.prepare("SELECT id FROM tasks WHERE user_id = ? AND status != 'completed' AND deadline IS NOT NULL").all(userId) as any[];
+    for (const t of activeTasks) {
+      try {
+        await runPlannerAgent(t.id);
+      } catch (plannerErr) {
+        console.error(`Error rerunning Planner for task ${t.id} on settings change:`, plannerErr);
+      }
+    }
 
     return res.json({ success: true });
   } catch (err) {
@@ -1749,6 +1779,305 @@ app.post("/api/tasks/:id/reshuffle", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("Reshuffle error:", err);
     return res.status(500).json({ error: "Failed to reshuffle task schedule blocks." });
+  }
+});
+
+// Helper to revalidate mathematical impossibility of schedules (max 12h per day)
+function revalidateImpossibility(userId: number) {
+  // Find all dates where total hours > 12
+  const overloads = db.prepare(`
+    SELECT date, SUM(planned_hours) as total_hours
+    FROM schedule_blocks sb
+    JOIN tasks t ON sb.task_id = t.id
+    WHERE t.user_id = ? AND t.status != 'completed'
+    GROUP BY date
+    HAVING total_hours > 12
+  `).all(userId) as any[];
+
+  // Reset planner_impossible for all of the user's tasks first
+  db.prepare(`
+    UPDATE tasks 
+    SET planner_impossible = 0, planner_impossible_reason = NULL 
+    WHERE user_id = ? AND status != 'completed'
+  `).run(userId);
+
+  if (overloads.length > 0) {
+    // Flag tasks that have blocks on overloaded dates
+    for (const row of overloads) {
+      const overloadedTasks = db.prepare(`
+        SELECT DISTINCT task_id 
+        FROM schedule_blocks sb
+        JOIN tasks t ON sb.task_id = t.id
+        WHERE t.user_id = ? AND sb.date = ? AND t.status != 'completed'
+      `).all(userId, row.date) as any[];
+
+      for (const ot of overloadedTasks) {
+        db.prepare(`
+          UPDATE tasks 
+          SET planner_impossible = 1, 
+              planner_impossible_reason = ? 
+          WHERE id = ?
+        `).run(
+          `Overloaded on ${row.date} with ${row.total_hours.toFixed(1)} planned work hours (max limit is 12 hours).`,
+          ot.task_id
+        );
+      }
+    }
+  }
+}
+
+// Helper to generate date list between today and a deadline
+function getDatesInRange(startStr: string, endStr: string): string[] {
+  const dates: string[] = [];
+  const start = new Date(startStr);
+  const end = new Date(endStr);
+  
+  // Set times to midnight to compare days correctly
+  start.setHours(0,0,0,0);
+  end.setHours(0,0,0,0);
+
+  const current = new Date(start);
+  while (current <= end) {
+    dates.push(current.toISOString().split("T")[0]);
+    current.setDate(current.getDate() + 1);
+  }
+  return dates;
+}
+
+// Fetch user's busy dates
+app.get("/api/busy-dates", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const rows = db.prepare("SELECT date FROM busy_dates WHERE user_id = ?").all(userId) as any[];
+    return res.json({ busyDates: rows.map(r => r.date) });
+  } catch (err) {
+    console.error("Fetch busy dates error:", err);
+    return res.status(500).json({ error: "Failed to fetch busy dates." });
+  }
+});
+
+// Toggle a date as busy/unavailable and redistribute hours
+app.post("/api/schedule/busy", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { date, isBusy } = req.body;
+
+    if (!date) {
+      return res.status(400).json({ error: "Date parameter is required." });
+    }
+
+    db.transaction(() => {
+      if (isBusy) {
+        // Mark as busy
+        db.prepare("INSERT OR IGNORE INTO busy_dates (user_id, date) VALUES (?, ?)").run(userId, date);
+
+        // Find blocks on this date that need redistribution
+        const blocksToMove = db.prepare(`
+          SELECT sb.*, t.deadline
+          FROM schedule_blocks sb
+          JOIN tasks t ON sb.task_id = t.id
+          WHERE t.user_id = ? AND sb.date = ? AND t.status != 'completed'
+        `).all(userId, date) as any[];
+
+        const todayStr = new Date().toISOString().split("T")[0];
+
+        for (const b of blocksToMove) {
+          if (!b.deadline) continue;
+          const deadlineStr = b.deadline.split("T")[0];
+
+          // Fetch busy dates for user
+          const busyDatesRows = db.prepare("SELECT date FROM busy_dates WHERE user_id = ?").all(userId) as { date: string }[];
+          const busyDatesSet = new Set(busyDatesRows.map(r => r.date));
+
+          // Get potential days
+          const allInRange = getDatesInRange(todayStr, deadlineStr);
+          const availableDates = allInRange.filter(d => d !== date && !busyDatesSet.has(d));
+
+          if (availableDates.length > 0) {
+            const addedHours = b.planned_hours / availableDates.length;
+            for (const ad of availableDates) {
+              const existing = db.prepare("SELECT id, planned_hours FROM schedule_blocks WHERE task_id = ? AND date = ?").get(b.task_id, ad) as any;
+              if (existing) {
+                db.prepare("UPDATE schedule_blocks SET planned_hours = ? WHERE id = ?").run(existing.planned_hours + addedHours, existing.id);
+              } else {
+                db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)").run(b.task_id, ad, addedHours);
+              }
+            }
+          } else {
+            // No free days available: flag task as impossible
+            db.prepare(`
+              UPDATE tasks 
+              SET planner_impossible = 1, 
+                  planner_impossible_reason = 'No free days available before the deadline to redistribute work.' 
+              WHERE id = ?
+            `).run(b.task_id);
+          }
+
+          // Delete block on the newly busy date
+          db.prepare("DELETE FROM schedule_blocks WHERE id = ?").run(b.id);
+        }
+      } else {
+        // Unmark as busy
+        db.prepare("DELETE FROM busy_dates WHERE user_id = ? AND date = ?").run(userId, date);
+      }
+
+      revalidateImpossibility(userId);
+    })();
+
+    const blocks = db.prepare(`
+      SELECT sb.*, t.title as task_title, t.urgency, t.status as task_status, t.importance, t.planner_impossible
+      FROM schedule_blocks sb
+      JOIN tasks t ON sb.task_id = t.id
+      WHERE t.user_id = ? AND t.status != 'completed'
+    `).all(userId);
+
+    const busyDatesRows = db.prepare("SELECT date FROM busy_dates WHERE user_id = ?").all(userId) as any[];
+
+    return res.json({ success: true, blocks, busyDates: busyDatesRows.map(r => r.date) });
+  } catch (err) {
+    console.error("Toggle busy date error:", err);
+    return res.status(500).json({ error: "Failed to toggle busy date." });
+  }
+});
+
+// Edit planned hours for a task block on a date and redistribute
+app.post("/api/schedule/update-block", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { taskId, date, hours } = req.body;
+
+    if (!taskId || !date || typeof hours !== "number" || hours < 0) {
+      return res.status(400).json({ error: "Missing or invalid parameters." });
+    }
+
+    // Verify task ownership
+    const task = db.prepare("SELECT * FROM tasks WHERE id = ? AND user_id = ?").get(taskId, userId) as any;
+    if (!task) {
+      return res.status(404).json({ error: "Task not found." });
+    }
+
+    db.transaction(() => {
+      const existing = db.prepare("SELECT id, planned_hours FROM schedule_blocks WHERE task_id = ? AND date = ?").get(taskId, date) as any;
+      const oldHours = existing ? existing.planned_hours : 0;
+      const diff = oldHours - hours;
+
+      if (hours === 0) {
+        if (existing) {
+          db.prepare("DELETE FROM schedule_blocks WHERE id = ?").run(existing.id);
+        }
+      } else {
+        if (existing) {
+          db.prepare("UPDATE schedule_blocks SET planned_hours = ? WHERE id = ?").run(hours, existing.id);
+        } else {
+          db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)").run(taskId, date, hours);
+        }
+      }
+
+      // Redistribute difference to other available days before the deadline
+      if (diff !== 0 && task.deadline) {
+        const todayStr = new Date().toISOString().split("T")[0];
+        const deadlineStr = task.deadline.split("T")[0];
+
+        const busyDatesRows = db.prepare("SELECT date FROM busy_dates WHERE user_id = ?").all(userId) as { date: string }[];
+        const busyDatesSet = new Set(busyDatesRows.map(r => r.date));
+
+        const allInRange = getDatesInRange(todayStr, deadlineStr);
+        const availableDates = allInRange.filter(d => d !== date && !busyDatesSet.has(d));
+
+        if (availableDates.length > 0) {
+          const adj = diff / availableDates.length;
+          for (const ad of availableDates) {
+            const block = db.prepare("SELECT id, planned_hours FROM schedule_blocks WHERE task_id = ? AND date = ?").get(taskId, ad) as any;
+            const currentVal = block ? block.planned_hours : 0;
+            const newVal = Math.max(0, currentVal + adj);
+
+            if (newVal === 0) {
+              if (block) {
+                db.prepare("DELETE FROM schedule_blocks WHERE id = ?").run(block.id);
+              }
+            } else {
+              if (block) {
+                db.prepare("UPDATE schedule_blocks SET planned_hours = ? WHERE id = ?").run(newVal, block.id);
+              } else {
+                db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)").run(taskId, ad, newVal);
+              }
+            }
+          }
+        }
+      }
+
+      revalidateImpossibility(userId);
+    })();
+
+    const blocks = db.prepare(`
+      SELECT sb.*, t.title as task_title, t.urgency, t.status as task_status, t.importance, t.planner_impossible
+      FROM schedule_blocks sb
+      JOIN tasks t ON sb.task_id = t.id
+      WHERE t.user_id = ? AND t.status != 'completed'
+    `).all(userId);
+
+    return res.json({ success: true, blocks });
+  } catch (err) {
+    console.error("Update block error:", err);
+    return res.status(500).json({ error: "Failed to update schedule block." });
+  }
+});
+
+// Drag/move a work block from one day to another
+app.post("/api/schedule/move-block", requireAuth, (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { taskId, fromDate, toDate } = req.body;
+
+    if (!taskId || !fromDate || !toDate) {
+      return res.status(400).json({ error: "Missing required parameters." });
+    }
+
+    // Verify ownership
+    const task = db.prepare("SELECT * FROM tasks WHERE id = ? AND user_id = ?").get(taskId, userId);
+    if (!task) {
+      return res.status(404).json({ error: "Task not found." });
+    }
+
+    // Check if toDate is busy/unavailable
+    const isBusy = db.prepare("SELECT id FROM busy_dates WHERE user_id = ? AND date = ?").get(userId, toDate);
+    if (isBusy) {
+      return res.status(400).json({ error: "Target date is marked as busy/unavailable." });
+    }
+
+    db.transaction(() => {
+      const fromBlock = db.prepare("SELECT id, planned_hours FROM schedule_blocks WHERE task_id = ? AND date = ?").get(taskId, fromDate) as any;
+      if (!fromBlock) {
+        return; // Nothing to move
+      }
+
+      const hours = fromBlock.planned_hours;
+
+      // Delete from old date
+      db.prepare("DELETE FROM schedule_blocks WHERE id = ?").run(fromBlock.id);
+
+      // Add to new date
+      const toBlock = db.prepare("SELECT id, planned_hours FROM schedule_blocks WHERE task_id = ? AND date = ?").get(taskId, toDate) as any;
+      if (toBlock) {
+        db.prepare("UPDATE schedule_blocks SET planned_hours = ? WHERE id = ?").run(toBlock.planned_hours + hours, toBlock.id);
+      } else {
+        db.prepare("INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)").run(taskId, toDate, hours);
+      }
+
+      revalidateImpossibility(userId);
+    })();
+
+    const blocks = db.prepare(`
+      SELECT sb.*, t.title as task_title, t.urgency, t.status as task_status, t.importance, t.planner_impossible
+      FROM schedule_blocks sb
+      JOIN tasks t ON sb.task_id = t.id
+      WHERE t.user_id = ? AND t.status != 'completed'
+    `).all(userId);
+
+    return res.json({ success: true, blocks });
+  } catch (err) {
+    console.error("Move block error:", err);
+    return res.status(500).json({ error: "Failed to move schedule block." });
   }
 });
 

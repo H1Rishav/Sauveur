@@ -115,26 +115,26 @@ User remarks: "${userConstraints || 'None'}"
 === RULES OF ENGAGEMENT ===
 1. GAIN INFERENCE OF THE TASK FROM DESCRIPTION AND TITLE:
    - Carefully analyze the task title and description. Deduce the realistic workload and hours required.
-   - Do NOT just default to rigid generic ranges if the description implies a very simple task. For example, a simple email draft should only require 0.5 to 1 hour, whereas a complex presentation layout may require 4 to 8 hours.
-   
-2. TIME AVAILABILITY ASSESSMENT:
+   - Do NOT just default to rigid generic ranges. A large task (e.g., 1000-page book study) MUST be broken down daily into multiple sessions based on task importance and remaining time.
+
+2. TIME AVAILABILITY & PREFERRED BLOCK SIZE:
    - There are exactly ${hoursDiff.toFixed(1)} hours (approx. ${(hoursDiff / 24).toFixed(1)} days) remaining between the current time and the deadline.
+   - UTILIZE PREFERRED BLOCK SIZE: If "Focus hours" in USER TRAITS lists a duration, this is your preferred work block size. If it is, for example, [9, 17], a reasonable work block is 2.5 to 3 hours. Do NOT use generic 1.5-hour blocks if the user prefers longer, focused sessions. If the user prefers short sprints, use shorter blocks.
    - CRITICAL REQUIREMENT: It only makes sense to allot daily hour-wise schedule blocks if there is at least a WHOLE day (24 hours or more) available before the deadline based on the task.
    - If there is LESS than 24 hours available before the deadline, or if the time frame is too small relative to the task scope, you MUST NOT allot any hour-wise blocks. In this case, keep the "blocks" list empty: [].
-   - If there is at least 24 hours available, budget the hour-wise schedule blocks on the calendar up to the deadline.
    - If the task is extremely trivial and can be done in a single short session, you may also keep the blocks empty if multi-day allocation makes no sense.
 
 3. ADAPTIVE SCHEDULING ENFORCEMENT:
    - Carefully read the "Adaptive Planner Directions" in the USER TRAITS section.
    - If the instructions state the user is a procrastinator, front-load their schedule with smaller, concentrated blocks, and set an earlier internal deadline in the roadmap description than the real one.
    - If the user is a frequent deadline misser, schedule the blocks to start sooner and provide explicit daily session hour targets in your roadmap narrative.
-   - If the user is a fast worker, allocate tighter, more concentrated hour budgets.
+   - If the user is a fast worker, allocate tighter, more concentrated hour budgets based on their preferred focus hours.
    - Strictly follow any other constraints defined in the Adaptive Planner Directions.
 
-4. If allotting blocks, generate an hour budget for each calendar date starting from "${currentDateStr}" up to and including "${deadlineDateStr}".
+4. If allotting blocks, generate an hour budget for each calendar date starting from "${currentDateStr}" up to and including "${deadlineDateStr}". For tasks requiring significant hours (e.g., book study), distribute the hours across ALL available days until the deadline, NOT just one day.
 5. Adapt the schedule dynamically to the user's remarks. If they are busy on a specific date or day of the week, set the hour budget for that day to 0 (or near 0).
 6. MAXIMUM hours per single day is 12 hours. If it is mathematically impossible to complete on time given the remaining time and constraints, set "impossible" to true and describe why in "impossible_reason".
-7. Provide an encouraging, highly professional overview in "roadmap_text" explaining the allocation of hours and pacing strategy.
+7. Provide an encouraging, highly professional overview in "roadmap_text" explaining the allocation of hours and pacing strategy, explicitly mentioning if you adjusted the block size based on the user's focus hour preference.
 
 Respond strictly in JSON format matching this schema:
 {

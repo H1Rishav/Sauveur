@@ -36,6 +36,8 @@ interface ScheduleBlock {
 export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPageProps) {
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
   const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
+  const [busyDates, setBusyDates] = useState<string[]>([]);
+  const [editingHours, setEditingHours] = useState<Record<number, number>>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [selectedDateStr, setSelectedDateStr] = useState<string | null>(
     new Date().toISOString().split('T')[0]
@@ -107,10 +109,80 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
         const data = await res.json();
         setScheduleBlocks(data.blocks || []);
       }
+
+      const busyRes = await apiFetch('/api/busy-dates');
+      if (busyRes.ok) {
+        const busyData = await busyRes.json();
+        setBusyDates(busyData.busyDates || []);
+      }
     } catch (err) {
       console.error("Failed to load schedule blocks:", err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleToggleBusyDate = async (date: string | null) => {
+    if (!date) return;
+    const isCurrentlyBusy = busyDates.includes(date);
+    try {
+      const res = await apiFetch('/api/schedule/busy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, isBusy: !isCurrentlyBusy })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScheduleBlocks(data.blocks || []);
+        setBusyDates(data.busyDates || []);
+        onRefresh();
+      }
+    } catch (err) {
+      console.error("Failed to toggle busy date:", err);
+    }
+  };
+
+  const handleUpdateBlockHours = async (taskId: number, date: string, hours: number) => {
+    try {
+      const res = await apiFetch('/api/schedule/update-block', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId, date, hours })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScheduleBlocks(data.blocks || []);
+        onRefresh();
+        // Clear editing state for this block
+        setEditingHours(prev => {
+          const next = { ...prev };
+          const block = scheduleBlocks.find(b => b.task_id === taskId && b.date === date);
+          if (block) delete next[block.id];
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error("Failed to update block hours:", err);
+    }
+  };
+
+  const handleMoveBlock = async (taskId: number, fromDate: string, toDate: string) => {
+    try {
+      const res = await apiFetch('/api/schedule/move-block', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId, fromDate, toDate })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScheduleBlocks(data.blocks || []);
+        onRefresh();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Failed to move work block.");
+      }
+    } catch (err) {
+      console.error("Failed to move block:", err);
     }
   };
 
@@ -242,9 +314,28 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
     // Impossible schedules highlight
     const hasImpossibleConflict = dateBlocks.some(b => b.planner_impossible === 1);
 
+    const isBusy = busyDates.includes(dateStr);
+
     cells.push(
-      <button
+      <div
         key={`day-${day}`}
+        onDragOver={(e) => {
+          if (!isBusy) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (isBusy) return;
+          try {
+            const dataStr = e.dataTransfer.getData('text/plain');
+            if (dataStr) {
+              const { taskId, fromDate } = JSON.parse(dataStr);
+              if (fromDate !== dateStr) {
+                handleMoveBlock(taskId, fromDate, dateStr);
+              }
+            }
+          } catch (err) {
+            console.error("Drop error:", err);
+          }
+        }}
         onClick={() => {
           setSelectedDateStr(dateStr);
           // Set first scheduled task with a deadline for potential reshuffling default
@@ -257,23 +348,27 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
           }
           setReshuffleStatus(null);
         }}
-        className={`h-28 p-2 border border-neutral-900 flex flex-col justify-between items-start transition-all duration-200 text-left relative overflow-hidden group ${
+        className={`h-28 p-2 border border-neutral-900 flex flex-col justify-between items-start transition-all duration-200 text-left relative overflow-hidden group cursor-pointer ${
           isSelected 
             ? 'bg-amber-950/20 border-amber-500/60 ring-1 ring-amber-500/30' 
             : isToday
             ? 'bg-neutral-900/40 border-neutral-800'
+            : isBusy
+            ? 'bg-rose-950/10 border-rose-950/30 opacity-75'
             : 'bg-neutral-900/10 hover:bg-neutral-900/30 border-neutral-900/60'
         }`}
       >
-        <div className="flex justify-between items-center w-full">
+        <div className="flex justify-between items-center w-full z-10">
           <span className={`text-xs font-mono font-medium ${
             isToday 
               ? 'text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded border border-amber-400/20' 
+              : isBusy
+              ? 'text-rose-400'
               : 'text-neutral-400 group-hover:text-neutral-200'
           }`}>
-            {day}
+            {day} {isBusy && <span className="text-[8px] font-mono uppercase bg-rose-950/30 px-1 py-0.5 rounded text-rose-400 shrink-0">Busy</span>}
           </span>
-          {totalHours > 0 && (
+          {totalHours > 0 && !isBusy && (
             <span className="text-[10px] font-mono font-semibold bg-neutral-850 px-1.5 py-0.5 rounded text-amber-500 border border-amber-500/10 flex items-center gap-1">
               <Clock className="w-2.5 h-2.5" />
               {totalHours.toFixed(1)}h
@@ -282,7 +377,7 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
         </div>
 
         {/* Content indicators inside cell */}
-        <div className="w-full space-y-1 mt-1 flex-1 flex flex-col justify-end">
+        <div className="w-full space-y-1 mt-1 flex-1 flex flex-col justify-end z-10">
           {hasImpossibleConflict && (
             <div className="text-[8px] font-mono bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded px-1 py-0.5 flex items-center gap-0.5 truncate uppercase">
               <AlertTriangle className="w-2 h-2 shrink-0 animate-pulse text-rose-500" />
@@ -293,35 +388,42 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
           {dateDeadlines.map(task => (
             <div 
               key={`dl-${task.id}`} 
-              className="text-[9px] font-sans bg-rose-950/20 text-rose-300 px-1.5 py-0.5 rounded border border-rose-950/60 truncate uppercase font-semibold tracking-wider flex items-center gap-1"
+              className="text-[9px] font-sans bg-rose-950/40 text-rose-300 px-1.5 py-0.5 rounded border border-rose-900/60 truncate uppercase font-semibold tracking-wider flex items-center gap-1 shadow-sm"
             >
-              <span className="w-1 h-1 rounded-full bg-rose-500 shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
               DL: {task.title}
             </div>
           ))}
 
-          {dateBlocks.slice(0, 2).map(block => (
+          {!isBusy && dateBlocks.slice(0, 2).map(block => (
             <div 
               key={`block-${block.id}`} 
-              className={`text-[9px] font-sans truncate px-1.5 py-0.5 rounded border ${
+              draggable={true}
+              onDragStart={(e) => {
+                e.stopPropagation();
+                e.dataTransfer.setData('text/plain', JSON.stringify({ taskId: block.task_id, fromDate: dateStr }));
+              }}
+              className={`text-[9px] font-sans truncate px-1.5 py-0.5 rounded border flex items-center justify-between gap-1 shadow-sm transition-all hover:brightness-110 active:scale-95 ${
                 block.planner_impossible 
                   ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
-                  : block.urgency === 'immediate'
-                  ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
-                  : 'bg-neutral-800 border-neutral-800 text-neutral-300'
+                  : block.urgency === 'urgent' || block.urgency === 'immediate'
+                  ? 'bg-amber-500/10 border-amber-500/25 text-amber-400'
+                  : 'bg-neutral-800 border-neutral-750 text-neutral-300'
               }`}
+              title="Drag to reschedule block"
             >
-              {block.task_title}
+              <span className="truncate">{block.task_title}</span>
+              <span className="font-mono font-bold text-[8px] opacity-80 shrink-0">{block.planned_hours.toFixed(1)}h</span>
             </div>
           ))}
           
-          {dateBlocks.length > 2 && (
+          {!isBusy && dateBlocks.length > 2 && (
             <div className="text-[8px] font-mono text-neutral-500 text-right pr-1">
               +{dateBlocks.length - 2} more
             </div>
           )}
         </div>
-      </button>
+      </div>
     );
   }
 
@@ -425,6 +527,26 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
               </p>
             </div>
 
+            {selectedDateStr && (
+              <div className="flex items-center justify-between bg-neutral-950/40 border border-neutral-850 rounded-lg p-3">
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-mono text-neutral-400 uppercase">Day Availability</span>
+                  <span className="text-xs font-sans text-neutral-200">Mark day as busy/unavailable</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleToggleBusyDate(selectedDateStr)}
+                  className={`px-3 py-1.5 rounded text-xs font-mono font-medium border uppercase transition-all ${
+                    busyDates.includes(selectedDateStr)
+                      ? 'bg-rose-500/10 border-rose-500/40 text-rose-400 hover:bg-rose-500/20'
+                      : 'bg-neutral-900 border-neutral-800 hover:border-neutral-700 text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {busyDates.includes(selectedDateStr) ? 'Busy / Unavailable' : 'Available'}
+                </button>
+              </div>
+            )}
+
             {selectedDateDeadlines.length > 0 && (
               <div className="space-y-2.5">
                 <h4 className="text-[10px] font-mono text-rose-400 uppercase font-bold tracking-wider">
@@ -494,6 +616,29 @@ export default function CalendarPage({ tasks, onRefresh, apiFetch }: CalendarPag
                         <span className="text-[8px] font-mono text-neutral-500 uppercase block mt-0.5">
                           Allocated
                         </span>
+                      </div>
+                    </div>
+
+                    {/* Inline Hour Editor */}
+                    <div className="flex items-center justify-between bg-neutral-950/30 border border-neutral-850/60 p-2 rounded-lg">
+                      <span className="text-[9px] font-mono text-neutral-400 uppercase">Adjust Hours:</span>
+                      <div className="flex items-center gap-1.5">
+                        <input 
+                          type="number" 
+                          step="0.5" 
+                          min="0" 
+                          max="12"
+                          value={editingHours[block.id] !== undefined ? editingHours[block.id] : block.planned_hours}
+                          onChange={(e) => setEditingHours({...editingHours, [block.id]: parseFloat(e.target.value) || 0})}
+                          className="w-14 bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded px-1.5 py-0.5 text-xs font-mono text-center text-amber-500 outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateBlockHours(block.task_id, block.date, editingHours[block.id] !== undefined ? editingHours[block.id] : block.planned_hours)}
+                          className="px-2 py-0.5 bg-neutral-900 border border-neutral-800 hover:border-amber-500 text-neutral-300 hover:text-amber-400 rounded text-[9px] font-mono uppercase transition-all"
+                        >
+                          Save
+                        </button>
                       </div>
                     </div>
 

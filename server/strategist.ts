@@ -64,12 +64,6 @@ export async function runStrategist(userId: number): Promise<StrategistResult> {
       const blocksForTask = scheduleBlocks.filter(b => b.task_id === t.id);
       const budgetedHours = blocksForTask.reduce((sum, b) => sum + b.planned_hours, 0);
 
-      // Deduce realistic needed hours based on importance if not budgeted
-      let estimatedHoursNeeded = budgetedHours;
-      if (estimatedHoursNeeded === 0) {
-        estimatedHoursNeeded = t.importance === 'high' ? 8 : t.importance === 'medium' ? 4 : 1.5;
-      }
-
       return {
         id: t.id,
         title: t.title,
@@ -79,7 +73,7 @@ export async function runStrategist(userId: number): Promise<StrategistResult> {
         importance: t.importance,
         mode: t.mode,
         hoursRemaining,
-        estimatedHoursNeeded,
+        budgetedHours,
         recipient_email: t.recipient_email
       };
     });
@@ -94,7 +88,7 @@ export async function runStrategist(userId: number): Promise<StrategistResult> {
       let minHoursRemaining = Infinity;
 
       tasksWithMetadata.forEach(t => {
-        totalNeeded += t.estimatedHoursNeeded;
+        totalNeeded += t.budgetedHours || 2; // Default to 2 hours if not budgeted
         if (t.hoursRemaining !== null) {
           totalAvailable = Math.max(totalAvailable, t.hoursRemaining);
           minHoursRemaining = Math.min(minHoursRemaining, t.hoursRemaining);
@@ -147,7 +141,9 @@ You reason deeply about available time vs. required workloads, providing raw, ho
 === CORE BEHAVIOR RULES ===
 1. REALITY-CHECK: Compare the total estimated hours needed against the actual remaining time to nearest deadlines. If they have 14h of work and 6h left, say so honestly and provide a concrete action plan.
 2. TRIAGE BY STAKES: When deadlines are less than 36 hours (~1 day) away, ruthlessly rank what to start immediately, what to minimize (do a basic version), and what to request an extension on, based on task importance and gravity.
-3. EXTENSION MAILS: Be realistic. Note honestly in your analysis that not all professors/managers grant extensions and sometimes a slightly late submission beats asking. Draft exceptionally polite, tailored extension-request emails for tasks where extensions are highly recommended.
+3. DEEP CONTENT ANALYSIS: FOR EVERY TASK, YOU MUST READ BOTH THE 'title' AND THE 'description' TO INFER REALISTIC EFFORT. Do NOT use generic shortcuts or default 1.5-hour estimations. If a task says "Read 1000-page book", recognize this takes dozens of hours, not 1.5 hours. Your estimation must be grounded in the text content, not generic defaults.
+4. EXTENSION MAILS: Be realistic. Note honestly in your analysis that not all professors/managers grant extensions and sometimes a slightly late submission beats asking. Draft exceptionally polite, tailored extension-request emails for tasks where extensions are highly recommended.
+5. NO TASK NUMBERS: DO NOT use task number indices (e.g., "Task 6", "Task 7") anywhere in your response or in "feasibilityAnalysis". Always refer to tasks solely by their descriptive title or a human-friendly shorthand (e.g., "your Algorithms Exam review" or "the Book Summary assignment").
 `;
 
     const prompt = `
@@ -157,7 +153,8 @@ Active tasks in pipeline:
 ${JSON.stringify(tasksWithMetadata, null, 2)}
 
 Provide your strategic analysis. Write a comprehensive markdown reality check as "feasibilityAnalysis".
-Categorize each active task into a specific "triageRecommendations" action ("START IMMEDIATELY", "MINIMIZE", "REQUEST EXTENSION", "DELEGATE", "MONITOR") with a clear objective reasoning statement.
+FOR EACH TASK, FIRST ESTIMATE THE REALISTIC TOTAL HOURS REQUIRED BY ANALYZING THE TITLE AND DESCRIPTION. DO NOT USE GENERIC DEFAULTS.
+Categorize each active task into a specific "triageRecommendations" action ("START IMMEDIATELY", "MINIMIZE", "REQUEST EXTENSION", "DELEGATE", "MONITOR") with a clear objective reasoning statement grounded in your realistic effort estimation.
 Compile polished, bespoke extension request drafts in "extensionDrafts" for any tasks that are high-stakes, congested, or highly appropriate for extension requests.
 
 Return JSON strictly conforming to this schema:
@@ -242,7 +239,7 @@ Return JSON strictly conforming to this schema:
       userId,
       JSON.stringify({
         phase: "Verify",
-        perceive: `Inspected ${tasksWithMetadata.length} pending tasks with estimated load of ${tasksWithMetadata.reduce((acc, t) => acc + t.estimatedHoursNeeded, 0)} hours.`,
+        perceive: `Inspected ${tasksWithMetadata.length} pending tasks with estimated load of ${tasksWithMetadata.reduce((acc, t) => acc + (t.budgetedHours || 2), 0)} hours.`,
         reason: "Calculated task deadlines congestion curves against current server time.",
         act: `Drafted ${result.extensionDrafts.length} extension requests. Formulated custom actions.`,
         verify: "Reality check complete. Safe and clear strategic recommendations generated."
