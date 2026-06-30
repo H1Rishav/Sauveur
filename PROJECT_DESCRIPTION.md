@@ -1,28 +1,35 @@
 # SAUVEUR: Autonomous Productivity Core
 
-SAUVEUR is a premium, high-stakes productivity system built for executive-level focus, leveraging a four-agent autonomous core (The Doer, The Planner, The Profiler, The Strategist) to handle task scheduling, artifact generation, risk assessment, and proactive workflow refinement.
+### 🚨 Problem Statement
+Traditional tools fail last-minute surge workers because they focus on reminders rather than solving cognitive procrastination, leaving students and professionals to struggle under unmanageable deadlines.
 
-## Security Posture
-- **Endpoint Protection**: All sensitive API endpoints (`/api/*`) are protected by session-based authentication (`requireAuth` middleware).
-- **Rate Limiting**: Applied across all API routes to mitigate potential DDoS and brute-force attempts.
-- **Input Sanitization**: All incoming request body inputs are server-side sanitized (`sanitizeString`) before database persistence or Gemini ingestion.
-- **Data Integrity**: All database queries utilize parameterized SQL inputs to prevent SQL injection vulnerabilities.
-- **Secrets Management**: No API keys or sensitive secrets are exposed to the client; all LLM and mail operations are proxied through server-side handlers.
-- **Authentication**: User password hashes are secured using `bcryptjs`.
+### 🧠 Solution Overview
+SAUVEUR is an autonomous cognitive-behavioral productivity system designed for late-night academic surge workers. Built on the thesis that deadlines are missed due to behavioral blocks rather than forgetfulness, SAUVEUR doesn't nudge or nag—it understands your pace, maps out compact daily work allocations, writes your research artifacts, and drafts polite extension request emails when workloads become mathematically impossible.
 
-## Demo Persona: The Final-Year Student ("Priya")
-The demo environment is fully seeded on server boot with a highly detailed, realistic final-year student persona ("Priya") to demonstrate SAUVEUR's complete features instantly without manual creation:
-- **Comprehensive Tasks**: A diverse list of active tasks across multiple urgency and mode states, including overdue assignments, high-stakes due-soon labs, and comfortably ahead placement applications.
-- **Completed Tasks & Pre-generated Artifacts**: Includes several completed agent-directed tasks complete with real, downloadable cognitive specifications, blueprints, and progress CSV files generated directly inside the physical `/artifacts` workspace directory.
-- **Detailed Habit Profile**: A fully realized habit profile modeled in The Profiler describing Priya's late-night surge tendencies, pace, and a detailed cognitive behavioral analysis.
-- **Populated Calendar Roadmap**: A spread of dynamic daily work blocks scheduled across days leading up to deadlines, along with busy dates toggled as unavailable to showcase scheduling intelligence.
-- **Strategist Warnings & Extension Queue**: Pre-configured workload density conflicts that trigger a "Mathematically Impossible Timeline" warning alongside a polished extension request email sitting in the proactive approval queue.
-- **Rewards, Ledger & Store**: A populated points ledger with clear earning history (e.g., Early Bird completions) and a transactional, browsable redemption store pre-funded with 200 points.
-- **Agent Activity Feed**: A comprehensive log of past autonomous agent actions, including an undoable calendar reshuffling action to demonstrate live state rollback.
+### ✨ Key Features
+* **Autonomous Artifact Generation**: The Doer agent creates high-fidelity study notes, LaTeX proofs, reports, and code specs directly in your workspace.
+* **Dynamic Calendar Roadmap**: Calculates, spreads, and dynamically redistributes hourly daily workloads to prevent last-minute crunch.
+* **Proactive Collision Detection**: Automatically flags "mathematically impossible timelines" and prepares polite extension emails in an approval queue.
+* **Cognitive Behavioral Profiler**: Analyzes peak performance, completion speeds, and historical miss rates to dynamically adapt schedules.
+* **Tamper-Proof Rewards & Store**: Earn points for focus streaks and early completions, and spend them in a browsable redemption store.
+* **Agent Feed & Cryptographic Reversal**: Audit all past agent operations with one-click cryptographic "Undo" to revert any state change.
 
-## Final Polish & Design
-- **Amber/Charcoal Theme**: A polished, high-contrast dark visual language optimized for deep focus.
-- **Animations**: Staggered fade-in-up entrance transitions for task cards, coupled with pulsing urgency indicators for near-deadline alerts.
-- **Agent Interaction**: Rich cognitive trace logging (Perceive → Reason → Act → Verify) for transparent autonomous execution.
-- **Interactive Roadmap & Dynamic Rescheduling**: The calendar displays a comprehensive day-by-day roadmap of work blocks alongside deadline markers. Users can drag and drop blocks between dates, edit planned hours directly, or toggle days as busy/unavailable to trigger instant, mathematically verified workload redistribution that flags unfeasible deadlocks.
+### 🧠 Agentic Depth
+Four specialized server-authoritative agents run a persistent **Perceive → Reason → Act → Verify (P→R→A→V)** cognitive execution loop. The agents autonomously read SQLite databases, reason about priorities and constraints, generate physical outputs, and verify integrity standards prior to logging.
 
+### 🌐 Google Technologies
+* **Google Gemini Function Calling**: Drives decision-making and tool execution for the four autonomous agents.
+* **Gemini-1.5-Flash**: Real-time server-side text, document, and image processing.
+* **Google Search Grounding**: Injects verified, up-to-date documentation and academic schemas into student research artifacts.
+* **Google Cloud Run**: Highly scalable, low-latency container environment.
+
+### 🛠️ Technologies Used
+Vite, React 18, Tailwind CSS, Recharts, Express, Better-SQLite3, BCryptJS, JWT, and Nodemailer.
+
+### 🔐 Security
+Uses session token verification, strict server-side rate limits, input sanitization, and server-authoritative transaction logging to prevent points tampering.
+
+### ⚠️ Limitations & Future Scope
+* **Model Rate Limits**: Relies on standard token rate limits (excessive rapid executions may hit temporary thresholds).
+* **Deep Personalization**: Future updates will introduce vectorized course-syllabus embeddings for ultra-precise academic artifact context.
+* **Scale-Out Strategy**: Highly optimized local SQLite database is ready to scale to PostgreSQL for multi-tenant deployments.
