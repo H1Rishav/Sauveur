@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion } from "motion/react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/Card.tsx';
 import Badge from './ui/Badge.tsx';
 import Button from './ui/Button.tsx';
@@ -758,30 +759,42 @@ export default function Dashboard({
           {/* Cards Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             {taskTab === 'incomplete' ? (
-              sortedIncompleteTasks.map((task) => (
-                <TaskCard
+              sortedIncompleteTasks.map((task, index) => (
+                <motion.div
                   key={task.id}
-                  task={task}
-                  onEdit={(t) => setEditingTask(t)}
-                  onDelete={onDeleteTask}
-                  onToggleComplete={onToggleComplete}
-                  onToggleMode={onToggleMode}
-                  onApproveTask={onApproveTask}
-                  onMomentumStart={onMomentumStart}
-                />
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: index * 0.05 }}
+                >
+                  <TaskCard
+                    task={task}
+                    onEdit={(t) => setEditingTask(t)}
+                    onDelete={onDeleteTask}
+                    onToggleComplete={onToggleComplete}
+                    onToggleMode={onToggleMode}
+                    onApproveTask={onApproveTask}
+                    onMomentumStart={onMomentumStart}
+                  />
+                </motion.div>
               ))
             ) : (
-              completedHistoryTasks.map((task) => (
-                <TaskCard
+              completedHistoryTasks.map((task, index) => (
+                <motion.div
                   key={task.id}
-                  task={task}
-                  onEdit={(t) => setEditingTask(t)}
-                  onDelete={onDeleteTask}
-                  onToggleComplete={onToggleComplete}
-                  onToggleMode={onToggleMode}
-                  onApproveTask={onApproveTask}
-                  onMomentumStart={onMomentumStart}
-                />
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: index * 0.05 }}
+                >
+                  <TaskCard
+                    task={task}
+                    onEdit={(t) => setEditingTask(t)}
+                    onDelete={onDeleteTask}
+                    onToggleComplete={onToggleComplete}
+                    onToggleMode={onToggleMode}
+                    onApproveTask={onApproveTask}
+                    onMomentumStart={onMomentumStart}
+                  />
+                </motion.div>
               ))
             )}
 

@@ -307,7 +307,7 @@ export default function TaskCard({
         isCompleted 
           ? 'border-neutral-800 text-neutral-400 opacity-75' 
           : deadlineInfo.colorClass
-      }`}
+      } ${deadlineInfo.badgeVariant === 'urgent' ? 'animate-pulse' : ''}`}
       id={`task-card-${task.id}`}
     >
       {isConfirmingDelete && (

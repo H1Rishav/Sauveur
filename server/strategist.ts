@@ -50,7 +50,10 @@ export async function runStrategist(userId: number): Promise<StrategistResult> {
 
     // Prepare time parameters
     const now = new Date();
-    const nowStr = now.toISOString();
+    // Use IST (UTC+5:30) for the strategizer's perspective
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const nowIST = new Date(now.getTime() + istOffset);
+    const nowStr = nowIST.toISOString().replace('Z', ' (IST)');
 
     // Map tasks and calculate remaining hours to deadline
     const tasksWithMetadata = tasks.map(t => {

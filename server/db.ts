@@ -182,150 +182,44 @@ export function initDB() {
 
     // Seed habit_profile
     const habitJson = JSON.stringify({
-      focusHours: [8, 11],
-      pace: "deliberate",
-      riskTolerance: "conservative",
-      communication: "editorial",
-      workStyle: "deep-focus"
+      focusHours: [9, 17],
+      pace: "fast",
+      riskTolerance: "moderate",
+      communication: "direct",
+      workStyle: "last-minute-burst"
     });
     db.prepare("INSERT INTO habit_profile (user_id, traits_json) VALUES (?, ?)").run(userId, habitJson);
 
-    // Seed tasks
+    // Seed tasks (colliding)
     const insertTask = db.prepare(`
-      INSERT INTO tasks (user_id, title, description, deadline, status, urgency, mode, requires_human_check, needs_mail, recipient_email, importance)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (user_id, title, description, deadline, status, urgency, mode, importance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const task1 = insertTask.run(
-      userId,
-      "Summarize Q2 Financial Report & Draft Board Memo",
-      "Process the massive CSV sheet containing Q2 expenses, identify anomalies in marketing spend, and generate an executive memo.",
-      "2026-06-30T17:00:00",
-      "completed",
-      "urgent",
-      "autopilot",
-      0,
-      1,
-      "board@company.com",
-      "high"
-    );
+    // Helper for task insertion
+    const now = new Date();
+    const addDays = (days: number) => {
+        const d = new Date(now);
+        d.setDate(d.getDate() + days);
+        return d.toISOString();
+    };
 
-    const task2 = insertTask.run(
-      userId,
-      "Draft Client Renewal Proposal (Zenith Corp)",
-      "Review historical Zenith correspondence, draft a tailored multi-year service renewal contract highlighting our Q1 milestones.",
-      "2026-07-02T12:00:00",
-      "human_check",
-      "medium",
-      "collaborative",
-      1,
-      1,
-      "accounts@zenithcorp.com",
-      "high"
-    );
+    insertTask.run(userId, "Advanced Algorithms Exam", "Final exam covering NP-hardness.", addDays(0), "pending", "urgent", "autopilot", "high");
+    insertTask.run(userId, "Operating Systems Exam", "Comprehensive final.", addDays(0), "pending", "urgent", "autopilot", "high");
+    insertTask.run(userId, "Database Systems Assignment", "Implement B-Tree indexing.", addDays(1), "pending", "urgent", "collaborative", "medium");
+    insertTask.run(userId, "Placement Drive Application", "Final date to upload CV.", addDays(2), "pending", "medium", "manual", "high");
 
-    const task3 = insertTask.run(
-      userId,
-      "Synthesize Competitor Pricing & Rebalance Standard Plan",
-      "Audit 5 competitor pricing tiers. Propose and simulate revenue curves for an alternative 12% margin structure.",
-      "2026-07-05T09:00:00",
-      "pending",
-      "low",
-      "autopilot",
-      0,
-      0,
-      null,
-      "medium"
-    );
-
-    // Seed artifacts
-    const insertArtifact = db.prepare(`
-      INSERT INTO artifacts (task_id, type, file_ref) VALUES (?, ?, ?)
-    `);
-    insertArtifact.run(task1.lastInsertRowid, "email_draft", "Board Memo: Q2 Review & Projections");
-    insertArtifact.run(task1.lastInsertRowid, "pdf", "q2_anomalies_summary.pdf");
-    insertArtifact.run(task2.lastInsertRowid, "email_draft", "Service Renewal Proposal: Zenith Corp");
-
-    // Seed schedule blocks
-    const insertSchedule = db.prepare(`
-      INSERT INTO schedule_blocks (task_id, date, planned_hours) VALUES (?, ?, ?)
-    `);
-    insertSchedule.run(task1.lastInsertRowid, "2026-06-27", 2.5);
-    insertSchedule.run(task2.lastInsertRowid, "2026-06-28", 1.5);
-    insertSchedule.run(task3.lastInsertRowid, "2026-06-29", 3.0);
-
-    // Seed rewards ledger
-    const insertReward = db.prepare(`
-      INSERT INTO rewards_ledger (user_id, delta, reason, balance_after) VALUES (?, ?, ?, ?)
-    `);
-    insertReward.run(userId, 50.0, "Welcome & Profile Initialization", 50.0);
-    insertReward.run(userId, 120.0, "Autonomous Completion of Q2 Financial Summary", 170.0);
-    insertReward.run(userId, -20.0, "Planner Token Cost for Multi-Agent Optimization", 150.0);
-
-    // Seed agent activity (Perceive -> Reason -> Act -> Verify)
+    // Seed agent activity
     const insertAction = db.prepare(`
       INSERT INTO agent_actions (user_id, agent, action, status, payload_json) VALUES (?, ?, ?, ?, ?)
     `);
 
-    // The Doer: Act & Verify
-    insertAction.run(
-      userId,
-      "The Doer",
-      "Re-indexing local financial ledger rows",
-      "completed",
-      JSON.stringify({
-        phase: "Act & Verify",
-        perceive: "Identified 3 CSV streams in /financials",
-        reason: "Calculated discrepancy in marketing rows due to currency conversion mismatch.",
-        act: "Amended 14 rows, compiled verified output in q2_anomalies_summary.pdf.",
-        verify: "Checked that sum of delta columns equals 0. Audit trail verified with 100% precision."
-      })
-    );
-
-    // The Planner: Perceive & Reason
-    insertAction.run(
-      userId,
-      "The Planner",
-      "Multi-day calendar alignment for pricing strategy",
-      "completed",
-      JSON.stringify({
-        phase: "Perceive & Reason",
-        perceive: "Received Zenith Proposal requirement + Competitor Pricing task.",
-        reason: "Identified high overlap. Pricing strategy must run before renewal proposal so renewal incorporates new plans.",
-        act: "Shifted zenith review to June 28, scheduled rebalancing to June 29 morning during high-focus zone.",
-        verify: "No conflicts detected. Allocated 7 hours of high-focus blocks across 3 days."
-      })
-    );
-
-    // The Profiler
-    insertAction.run(
-      userId,
-      "The Profiler",
-      "Adjusting work style parameters",
-      "completed",
-      JSON.stringify({
-        phase: "Perceive & Reason",
-        perceive: "User skipped 2 evening tasks in a row.",
-        reason: "User demonstrates very low energy & task completion rate after 18:00.",
-        act: "Moved evening deep work blocks to morning (08:00 - 11:00) window. Lowered afternoon expectations.",
-        verify: "Pace threshold set to 'deliberate'. Notification frequency dialed down."
-      })
-    );
-
-    // The Strategist
-    insertAction.run(
-      userId,
-      "The Strategist",
-      "Evaluating project risk curves",
-      "completed",
-      JSON.stringify({
-        phase: "Verify",
-        perceive: "Pricing rebalance task deadline approaches on July 5.",
-        reason: "Delay in competitor pricing rebalance puts renewal proposals at risk.",
-        act: "Flagged Pricing Synthesizer with higher urgency, sent alert requesting proactive execution model.",
-        verify: "Risk tolerance profile checked: conservative. Proactive agent modes enabled."
-      })
-    );
+    insertAction.run(userId, "The Strategist", "Analyzing upcoming crunch.", "completed", JSON.stringify({
+        perceive: "Deadline collision detected in 24 hours.",
+        reason: "Two exams and a major assignment overlap.",
+        act: "Prioritizing Algorithm exam review.",
+        verify: "Schedule set."
+    }));
 
     console.log("Database seeded successfully.");
   }
