@@ -43,9 +43,21 @@ export default function LandingPage({ onNavigate, onEnterDemo, isLoggingIn }: La
           </span>
         </h1>
 
-        {/* Video Placeholder */}
-        <div className="w-full aspect-video bg-neutral-900 border border-neutral-800 rounded-lg flex items-center justify-center text-neutral-500 font-sans mb-12 shadow-2xl shadow-amber-500/10">
-          Watch the 90-second rescue demo
+        {/* Video Section */}
+        <div className="w-full mb-12">
+          <div className="aspect-video w-full rounded-lg overflow-hidden border border-neutral-800 shadow-2xl shadow-amber-500/10">
+            <iframe
+              className="w-full h-full"
+              src="https://www.youtube.com/embed/zNv7DUnTbYA"
+              title="Project Demo"
+              frameBorder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            ></iframe>
+          </div>
+          <p className="font-sans text-neutral-400 text-sm mt-4">
+            please go through this video to gain quick insight on the project
+          </p>
         </div>
 
         {/* CTA Actions */}

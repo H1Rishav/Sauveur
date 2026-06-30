@@ -208,6 +208,14 @@ export function initDB() {
     insertTask.run(userId, "Operating Systems Exam", "Comprehensive final.", addDays(0), "pending", "urgent", "autopilot", "high");
     insertTask.run(userId, "Database Systems Assignment", "Implement B-Tree indexing.", addDays(1), "pending", "urgent", "collaborative", "medium");
     insertTask.run(userId, "Placement Drive Application", "Final date to upload CV.", addDays(2), "pending", "medium", "manual", "high");
+    insertTask.run(userId, "Complete Sample Demo Task", "This task is completed to test undo.", addDays(0), "completed", "low", "autopilot", "low");
+
+    // Seed rewards
+    const insertReward = db.prepare(`
+      INSERT INTO rewards_ledger (user_id, delta, reason, balance_after) VALUES (?, ?, ?, ?)
+    `);
+    insertReward.run(userId, 50.0, "Welcome Bonus", 50.0);
+    insertReward.run(userId, 100.0, "Early Bird Completion", 150.0);
 
     // Seed agent activity
     const insertAction = db.prepare(`
